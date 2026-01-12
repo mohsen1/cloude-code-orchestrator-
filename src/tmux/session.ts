@@ -56,15 +56,21 @@ export class TmuxManager {
 
   /**
    * Send keys (text) to a tmux session.
+   * Waits before pressing Enter to ensure Claude Code receives the input properly.
    */
   async sendKeys(sessionName: string, keys: string, pressEnter: boolean = true): Promise<void> {
     try {
-      const args = ['send-keys', '-t', sessionName, keys];
-      if (pressEnter) {
-        args.push('Enter');
-      }
-      await execa('tmux', args);
+      // Send the text first
+      await execa('tmux', ['send-keys', '-t', sessionName, keys]);
       logger.debug(`Sent keys to ${sessionName}: ${keys.substring(0, 50)}...`);
+
+      if (pressEnter) {
+        // Wait 3 seconds for Claude Code to process the pasted text
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        // Then send Enter
+        await execa('tmux', ['send-keys', '-t', sessionName, 'Enter']);
+        logger.debug(`Sent Enter to ${sessionName}`);
+      }
     } catch (err) {
       logger.error(`Failed to send keys to ${sessionName}`, err);
       throw err;
