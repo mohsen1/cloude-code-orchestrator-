@@ -18,8 +18,9 @@ import { registerHookHandlers } from '../claude/hook-handlers.js';
 import { GitManager } from '../git/worktree.js';
 import { CostTracker } from './cost-tracker.js';
 import { StuckDetector } from './stuck-detector.js';
+import { generateClaudeSettings } from '../claude/hooks.js';
 import { execa } from 'execa';
-import { mkdir, rm, copyFile } from 'fs/promises';
+import { mkdir, rm, copyFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../utils/logger.js';
@@ -261,6 +262,15 @@ export class Orchestrator {
     if (authConfig) {
       Object.assign(env, authConfig.env);
     }
+
+    // Write hooks configuration to Claude settings.json
+    const orchestratorUrl = `http://localhost:${this.config.hookServerPort}`;
+    const settings = generateClaudeSettings(orchestratorUrl, id, workerId, type, { env });
+    const claudeDir = join(workDir, '.claude');
+    await mkdir(claudeDir, { recursive: true });
+    const settingsPath = join(claudeDir, 'settings.json');
+    await writeFile(settingsPath, JSON.stringify(settings, null, 2));
+    logger.debug(`Wrote hooks to settings.json`, { path: settingsPath });
 
     // Create tmux session with env vars and start Claude
     await this.tmux.createSessionWithClaude(sessionName, workDir, env);
