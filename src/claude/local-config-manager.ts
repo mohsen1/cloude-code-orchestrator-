@@ -46,21 +46,15 @@ export class LocalConfigManager {
    * Hooks detect instance from tmux session name and POST to orchestrator.
    */
   private getHooksConfig(): Record<string, string> {
-    const hookScript = (hookName: string) => `
-SESSION=$(tmux display-message -p '#S' 2>/dev/null || echo 'unknown')
-if [[ $SESSION == "claude-manager" ]]; then
-  INSTANCE_ID="manager"
-  WORKER_ID=0
-  TYPE="manager"
-elif [[ $SESSION == claude-worker-* ]]; then
-  INSTANCE_ID="\${SESSION#claude-}"
-  WORKER_ID="\${SESSION#claude-worker-}"
-  TYPE="worker"
-else
-  exit 0
-fi
-curl -s -X POST "http://localhost:${this.hookServerPort}/hooks/${hookName}" -H "Content-Type: application/json" -d "{\\"instance_id\\":\\"$INSTANCE_ID\\",\\"worker_id\\":$WORKER_ID,\\"instance_type\\":\\"$TYPE\\"}" > /dev/null 2>&1 &
-`.trim().replace(/\n/g, '; ');
+    // Single-line bash script with proper if/then/fi syntax
+    const hookScript = (hookName: string) =>
+      `SESSION=$(tmux display-message -p '#S' 2>/dev/null || echo 'unknown'); ` +
+      `if [[ $SESSION == "claude-manager" ]]; then INSTANCE_ID="manager"; WORKER_ID=0; TYPE="manager"; ` +
+      `elif [[ $SESSION == claude-worker-* ]]; then INSTANCE_ID="\${SESSION#claude-}"; WORKER_ID="\${SESSION#claude-worker-}"; TYPE="worker"; ` +
+      `else exit 0; fi; ` +
+      `curl -s -X POST "http://localhost:${this.hookServerPort}/hooks/${hookName}" ` +
+      `-H "Content-Type: application/json" ` +
+      `-d "{\\"instance_id\\":\\"$INSTANCE_ID\\",\\"worker_id\\":$WORKER_ID,\\"instance_type\\":\\"$TYPE\\"}" &`;
 
     return {
       Stop: hookScript('stop'),
