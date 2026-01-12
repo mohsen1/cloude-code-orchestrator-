@@ -12,7 +12,6 @@ describe('ConfigLoader', () => {
     repositoryUrl: 'https://github.com/test/repo.git',
     branch: 'main',
     workerCount: 2,
-    claudeConfigs: '/tmp/claude-configs/*.json',
     hookServerPort: 3000,
   };
 
@@ -48,7 +47,6 @@ describe('ConfigLoader', () => {
       const minimalConfig = {
         repositoryUrl: 'https://github.com/test/repo.git',
         workerCount: 1,
-        claudeConfigs: '*.json',
       };
       await writeFile(
         join(testDir, 'orchestrator.json'),
@@ -138,116 +136,17 @@ describe('ConfigLoader', () => {
     });
   });
 
-  describe('loadClaudeConfigs', () => {
-    let claudeConfigDir: string;
-
-    beforeEach(async () => {
-      claudeConfigDir = join(testDir, 'claude-configs');
-      await mkdir(claudeConfigDir, { recursive: true });
-
-      // Write orchestrator config with pattern pointing to test dir
-      await writeFile(
-        join(testDir, 'orchestrator.json'),
-        JSON.stringify({
-          ...validConfig,
-          claudeConfigs: `${claudeConfigDir}/*.json`,
-        })
-      );
-    });
-
-    it('should find matching config files', async () => {
-      await writeFile(
-        join(claudeConfigDir, 'config1.json'),
-        JSON.stringify({ apiKey: 'key1' })
-      );
-      await writeFile(
-        join(claudeConfigDir, 'config2.json'),
-        JSON.stringify({ apiKey: 'key2' })
-      );
-
-      const paths = await loader.loadClaudeConfigs();
-
-      expect(paths.length).toBe(2);
-      expect(paths.some((p) => p.includes('config1.json'))).toBe(true);
-      expect(paths.some((p) => p.includes('config2.json'))).toBe(true);
-    });
-
-    it('should throw when no config files match', async () => {
-      await expect(loader.loadClaudeConfigs()).rejects.toThrow(
-        'No Claude config files found'
-      );
-    });
-  });
-
-  describe('validateClaudeConfigs', () => {
-    let claudeConfigDir: string;
-
-    beforeEach(async () => {
-      claudeConfigDir = join(testDir, 'claude-configs');
-      await mkdir(claudeConfigDir, { recursive: true });
-    });
-
-    it('should validate valid config files', async () => {
-      const configPath = join(claudeConfigDir, 'valid.json');
-      await writeFile(configPath, JSON.stringify({ apiKey: 'sk-ant-test' }));
-
-      await expect(loader.validateClaudeConfigs([configPath])).resolves.not.toThrow();
-    });
-
-    it('should allow additional properties (passthrough)', async () => {
-      const configPath = join(claudeConfigDir, 'extended.json');
-      await writeFile(
-        configPath,
-        JSON.stringify({
-          apiKey: 'sk-ant-test',
-          customSetting: 'value',
-          env: { CUSTOM_VAR: 'test' },
-        })
-      );
-
-      await expect(loader.validateClaudeConfigs([configPath])).resolves.not.toThrow();
-    });
-
-    it('should reject invalid JSON files', async () => {
-      const configPath = join(claudeConfigDir, 'invalid.json');
-      await writeFile(configPath, '{ not valid json }');
-
-      await expect(loader.validateClaudeConfigs([configPath])).rejects.toThrow(
-        'Invalid Claude config files'
-      );
-    });
-  });
-
   describe('validate', () => {
-    it('should return config and claude paths when valid', async () => {
-      const claudeConfigDir = join(testDir, 'claude-configs');
-      await mkdir(claudeConfigDir, { recursive: true });
-
+    it('should return config when valid', async () => {
       await writeFile(
         join(testDir, 'orchestrator.json'),
-        JSON.stringify({
-          ...validConfig,
-          claudeConfigs: `${claudeConfigDir}/*.json`,
-        })
-      );
-
-      await writeFile(
-        join(claudeConfigDir, 'config1.json'),
-        JSON.stringify({ apiKey: 'key1' })
-      );
-      await writeFile(
-        join(claudeConfigDir, 'config2.json'),
-        JSON.stringify({ apiKey: 'key2' })
-      );
-      await writeFile(
-        join(claudeConfigDir, 'config3.json'),
-        JSON.stringify({ apiKey: 'key3' })
+        JSON.stringify(validConfig)
       );
 
       const result = await loader.validate();
 
       expect(result.config.repositoryUrl).toBe(validConfig.repositoryUrl);
-      expect(result.claudeConfigPaths.length).toBe(3);
+      expect(result.config.workerCount).toBe(validConfig.workerCount);
     });
   });
 });

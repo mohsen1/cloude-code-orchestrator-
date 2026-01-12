@@ -47,18 +47,15 @@ async function main(): Promise<void> {
   const loader = new ConfigLoader(values.config);
 
   let config;
-  let claudeConfigPaths;
 
   try {
     const validated = await loader.validate();
     config = validated.config;
-    claudeConfigPaths = validated.claudeConfigPaths;
 
     logger.info('Configuration loaded', {
       repository: config.repositoryUrl,
       branch: config.branch,
       workerCount: config.workerCount,
-      claudeConfigs: claudeConfigPaths.length,
     });
   } catch (err) {
     logger.error('Configuration error', err);
@@ -66,7 +63,7 @@ async function main(): Promise<void> {
   }
 
   // Create orchestrator
-  const orchestrator = new Orchestrator(config, claudeConfigPaths);
+  const orchestrator = new Orchestrator(config);
 
   // Set up signal handlers for graceful shutdown
   setupSignalHandlers(orchestrator);
@@ -81,8 +78,8 @@ async function main(): Promise<void> {
       logger.info('Orchestrator status', {
         instances: status.instances,
         tasks: status.tasks,
-        configs: status.configs,
         health: status.health,
+        costs: status.costs,
       });
     }, 60000);
 
@@ -151,14 +148,14 @@ Options:
 
 Config Directory Structure:
   <config-dir>/
-  └── orchestrator.json   Main orchestrator settings
+  ├── orchestrator.json   Main orchestrator settings
+  └── api-keys.json       API key configuration (optional)
 
 Example orchestrator.json:
   {
     "repositoryUrl": "https://github.com/org/repo.git",
     "branch": "main",
-    "workerCount": 3,
-    "claudeConfigs": "~/claude-configs/*.json"
+    "workerCount": 3
   }
 
 For more information, see the documentation at:

@@ -4,7 +4,6 @@ import { DockerManager } from '../docker/manager.js';
 import { HealthMonitor } from '../docker/health.js';
 import { TmuxManager } from '../tmux/session.js';
 import { ClaudeInstanceManager, ClaudeInstance } from '../claude/instance.js';
-import { ConfigRotator } from '../claude/config-rotator.js';
 import { RateLimitDetector } from '../claude/rate-limit-detector.js';
 import { registerHookHandlers } from '../claude/hook-handlers.js';
 import { GitManager } from '../git/worktree.js';
@@ -22,7 +21,6 @@ export class Orchestrator {
   private healthMonitor: HealthMonitor;
   private tmux: TmuxManager;
   private instanceManager: ClaudeInstanceManager;
-  private configRotator: ConfigRotator;
   private rateLimitDetector: RateLimitDetector;
   private git: GitManager;
   private _merger: BranchMerger;
@@ -33,16 +31,12 @@ export class Orchestrator {
   private managerInstance?: ClaudeInstance;
   private isShuttingDown: boolean = false;
 
-  constructor(
-    private config: OrchestratorConfig,
-    claudeConfigPaths: string[]
-  ) {
+  constructor(private config: OrchestratorConfig) {
     // Initialize components
     this.hookServer = new HookServer(config.hookServerPort);
     this.docker = new DockerManager();
     this.tmux = new TmuxManager();
     this.instanceManager = new ClaudeInstanceManager(this.docker, this.tmux);
-    this.configRotator = new ConfigRotator(claudeConfigPaths);
     this.git = new GitManager('/workspace');
     this._merger = new BranchMerger('/workspace');
     this.scheduler = new TaskScheduler();
@@ -96,7 +90,7 @@ export class Orchestrator {
         orchestratorUrl: `http://host.docker.internal:${this.config.hookServerPort}`,
         repoUrl: this.config.repositoryUrl,
         branch: this.config.branch,
-        configDir: './claude-configs',
+        configDir: './config',
       });
       await composeGenerator.writeComposeFile('./docker-compose.yml', compose);
 
@@ -158,30 +152,20 @@ export class Orchestrator {
    */
   private async createInstances(): Promise<void> {
     // Create manager instance
-    const managerConfig = this.configRotator.assignConfig('manager');
-    if (!managerConfig) {
-      throw new Error('No config available for manager');
-    }
-
     this.managerInstance = await this.instanceManager.createInstance({
       id: 'manager',
       type: 'manager',
       workerId: 0,
-      configPath: managerConfig,
+      configPath: '',
     });
 
     // Create worker instances
     for (let i = 1; i <= this.config.workerCount; i++) {
-      const workerConfig = this.configRotator.assignConfig(`worker-${i}`);
-      if (!workerConfig) {
-        throw new Error(`No config available for worker-${i}`);
-      }
-
       await this.instanceManager.createInstance({
         id: `worker-${i}`,
         type: 'worker',
         workerId: i,
-        configPath: workerConfig,
+        configPath: '',
       });
     }
 
@@ -376,41 +360,30 @@ Worker ${workerId} has finished their current task and pushed to branch \`worker
     // Save context
     const savedTask = instance.currentTaskFull;
 
-    // Rotate config
-    const newConfig = this.configRotator.rotateConfig(instanceId, instance.configPath);
-    if (!newConfig) {
-      logger.error(`No available config for ${instanceId}, instance will be stopped`);
-      this.instanceManager.updateStatus(instanceId, 'error');
-      return;
-    }
+    // Mark as rate limited - Docker mode relies on ANTHROPIC_API_KEY env var
+    // so we can only log the error and hope it resolves
+    logger.error(`Rate limited on ${instanceId} - waiting for cooldown`);
+    this.instanceManager.updateStatus(instanceId, 'error');
 
-    // Update instance config
-    instance.configPath = newConfig;
+    // Wait for cooldown (in Docker mode, we can't easily rotate configs)
+    await new Promise((resolve) => setTimeout(resolve, 60000));
 
-    // Copy new config to container and restart Claude
-    await this.docker.copyToContainer(instance.containerName, newConfig, '/root/.claude/settings.json');
-
-    // Interrupt and restart Claude
-    await this.instanceManager.interruptInstance(instanceId);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    await this.tmux.sendKeys(instance.sessionName, 'claude --dangerously-skip-permissions');
+    // Try to resume
+    this.instanceManager.updateStatus(instanceId, 'ready');
 
     // Restore context
     if (savedTask) {
-      await new Promise((resolve) => setTimeout(resolve, 3000));
       const resumePrompt = `
-You were restarted due to API rate limits. Your configuration has been rotated.
+You were paused due to API rate limits. Please resume your task.
 
 Your previous task was:
 ${savedTask}
 
-Please resume this task. Check your recent file changes and git status to understand your progress.
+Please check your recent file changes and git status to understand your progress, then continue.
       `.trim();
 
       await this.instanceManager.sendPrompt(instanceId, resumePrompt);
     }
-
-    logger.info(`Config rotated for ${instanceId}`);
   }
 
   /**
@@ -523,14 +496,12 @@ Please continue working or indicate if you need help.
   getStatus(): {
     instances: ReturnType<ClaudeInstanceManager['getStats']>;
     tasks: ReturnType<TaskScheduler['getStats']>;
-    configs: ReturnType<ConfigRotator['getStats']>;
     health: ReturnType<HealthMonitor['getHealthySummary']>;
     costs: ReturnType<CostTracker['getStats']>;
   } {
     return {
       instances: this.instanceManager.getStats(),
       tasks: this.scheduler.getStats(),
-      configs: this.configRotator.getStats(),
       health: this.healthMonitor.getHealthySummary(),
       costs: this.costTracker.getStats(),
     };

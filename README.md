@@ -42,21 +42,41 @@ Create a config directory with the following files:
 {
   "repositoryUrl": "https://github.com/org/repo.git",
   "branch": "main",
-  "workerCount": 2,
-  "claudeConfigs": "~/.claude-configs/*.json",
-  "hookServerPort": 3000,
-  "maxRunDurationMinutes": 120
+  "workerCount": 2
 }
 ```
 
+### Configuration Reference
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `repositoryUrl` | string | *required* | URL of the git repository to work on |
+| `branch` | string | `"main"` | Branch to check out and work from |
+| `workerCount` | number | *required* | Number of worker instances (1-20) |
+| `hookServerPort` | number | `3000` | Port for the internal hook server (1024-65535) |
+| `healthCheckIntervalMs` | number | `30000` | Health check polling interval in milliseconds (min: 5000) |
+| `rateLimitCheckIntervalMs` | number | `10000` | Rate limit detection interval in milliseconds (min: 5000) |
+| `stuckThresholdMs` | number | `300000` | Time without tool use before instance is considered stuck (min: 60000) |
+| `maxToolUsesPerInstance` | number | `500` | Maximum tool invocations per instance before stopping (min: 100) |
+| `maxTotalToolUses` | number | `2000` | Maximum total tool invocations across all instances (min: 500) |
+| `maxRunDurationMinutes` | number | `120` | Maximum orchestrator run time in minutes (min: 10) |
+
 ### api-keys.json (optional, for rate limit rotation)
+
+Configure API keys for rate limit rotation. Supports Z.AI and standard Anthropic API keys.
 
 ```json
 [
   { "name": "z.ai-1", "primaryApiKey": "sk-ant-...", "source": "z.ai" },
-  { "name": "z.ai-2", "primaryApiKey": "sk-ant-...", "source": "z.ai" }
+  { "name": "anthropic-1", "primaryApiKey": "sk-ant-...", "source": "anthropic" }
 ]
 ```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Identifier for this API key |
+| `primaryApiKey` | Yes | The API key (sk-ant-...) |
+| `source` | No | Provider: `"z.ai"` or `"anthropic"` (default: `"anthropic"`) |
 
 ## Architecture
 
