@@ -31,6 +31,8 @@ async function loadApiKeyConfigs(configDir: string): Promise<ApiKeyConfig[]> {
     const configs: ApiKeyConfig[] = parsed.map((item: any, i: number) => ({
       name: item.name || `api-key-${i + 1}`,
       primaryApiKey: item.primaryApiKey || item.apiKey || item.key,
+      env: item.env, // Z.AI style
+      settings: item.settings, // Full settings object
       apiKeySource: item.source || item.apiKeySource || 'unknown',
     }));
 

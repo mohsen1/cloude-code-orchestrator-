@@ -11,7 +11,17 @@ import { logger } from '../utils/logger.js';
 
 export interface ApiKeyConfig {
   name: string;
-  primaryApiKey: string;
+  // Standard Anthropic API key
+  primaryApiKey?: string;
+  // Z.AI style config with env block
+  env?: {
+    ANTHROPIC_AUTH_TOKEN?: string;
+    ANTHROPIC_BASE_URL?: string;
+    API_TIMEOUT_MS?: string;
+    [key: string]: string | undefined;
+  };
+  // Full settings object (for complex configs)
+  settings?: Record<string, unknown>;
   apiKeySource?: string; // e.g., "z.ai", "anthropic", etc.
 }
 
@@ -135,13 +145,27 @@ export class LocalConfigManager {
 
   /**
    * Apply API key config.
+   * Supports: standard Anthropic API key, Z.AI env format, or full settings object.
    */
   private async applyApiKeyConfig(config: ApiKeyConfig): Promise<void> {
-    const apiKeySettings = JSON.stringify({
-      primaryApiKey: config.primaryApiKey,
-    }, null, 2);
-    await writeFile(this.claudeSettingsPath, apiKeySettings);
-    logger.debug(`Applied API key config: ${config.name}`);
+    let settings: Record<string, unknown>;
+
+    if (config.settings) {
+      // Full settings object provided
+      settings = config.settings;
+    } else if (config.env) {
+      // Z.AI style with env block
+      settings = { env: config.env };
+    } else if (config.primaryApiKey) {
+      // Standard Anthropic API key
+      settings = { primaryApiKey: config.primaryApiKey };
+    } else {
+      logger.warn(`Config ${config.name} has no valid authentication`);
+      settings = {};
+    }
+
+    await writeFile(this.claudeSettingsPath, JSON.stringify(settings, null, 2));
+    logger.debug(`Applied API key config: ${config.name}`, { source: config.apiKeySource });
   }
 
   /**
