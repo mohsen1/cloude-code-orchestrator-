@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
+    "local": "tsx src/local.ts",
     "test": "vitest",
     "test:run": "vitest run",
     "lint": "eslint src/**/*.ts",
