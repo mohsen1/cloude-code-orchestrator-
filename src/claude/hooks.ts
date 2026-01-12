@@ -1,14 +1,33 @@
-export interface ClaudeHooksConfig {
+/**
+ * Generate Claude Code hooks configuration that sends events to the orchestrator.
+ * Compatible with Claude Code 2.1.5+ hooks format.
+ */
+
+interface HookMatcher {
+  hooks: Hook[];
+  matcher?: string; // Optional - only for PreToolUse, PermissionRequest, PostToolUse
+}
+
+interface Hook {
+  type: 'command' | 'prompt';
+  command?: string;
+  prompt?: string;
+  timeout?: number;
+}
+
+interface ClaudeHooksConfig {
   hooks: {
-    Stop?: HookDefinition[];
-    ToolUse?: HookDefinition[];
-    [key: string]: HookDefinition[] | undefined;
+    Stop?: HookMatcher[];
+    [key: string]: HookMatcher[] | undefined;
   };
 }
 
-interface HookDefinition {
-  matcher: string;
-  command: string[];
+/**
+ * Escape a string for safe use in a shell command within JSON.
+ */
+function escapeShellString(str: string): string {
+  // Replace " with \" and wrap in quotes
+  return '"' + str.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
 }
 
 /**
@@ -26,41 +45,22 @@ export function generateHooksConfig(
     instance_type: instanceType,
   };
 
-  const payloadJson = JSON.stringify(basePayload);
+  const payloadJson = escapeShellString(JSON.stringify(basePayload));
+
+  // Build curl command as a single string
+  const stopHookCommand = `curl -s -X POST -H Content-Type:application/json -d ${payloadJson} ${orchestratorUrl}/hooks/stop`;
 
   return {
     hooks: {
       // Stop hook - instance finished its task
+      // Note: Stop hooks don't use matchers, they just have the "hooks" array
       Stop: [
         {
-          matcher: '*',
-          command: [
-            'curl',
-            '-s',
-            '-X',
-            'POST',
-            '-H',
-            'Content-Type: application/json',
-            '-d',
-            payloadJson,
-            `${orchestratorUrl}/hooks/stop`,
-          ],
-        },
-      ],
-      // ToolUse hook - for heartbeat/activity tracking
-      ToolUse: [
-        {
-          matcher: '*',
-          command: [
-            'curl',
-            '-s',
-            '-X',
-            'POST',
-            '-H',
-            'Content-Type: application/json',
-            '-d',
-            payloadJson,
-            `${orchestratorUrl}/hooks/tool_use`,
+          hooks: [
+            {
+              type: 'command',
+              command: stopHookCommand,
+            },
           ],
         },
       ],
