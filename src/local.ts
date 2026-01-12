@@ -28,18 +28,10 @@ async function loadApiKeyConfigs(configDir: string): Promise<ApiKeyConfig[]> {
       return [];
     }
 
-    const configs: ApiKeyConfig[] = parsed.map((item: any, i: number) => {
-      // Support both new format (env) and legacy format (primaryApiKey)
-      let env = item.env;
-      if (!env && (item.primaryApiKey || item.apiKey || item.key)) {
-        // Convert legacy primaryApiKey to env format
-        env = { ANTHROPIC_API_KEY: item.primaryApiKey || item.apiKey || item.key };
-      }
-      return {
-        name: item.name || `api-key-${i + 1}`,
-        env: env || {},
-      };
-    });
+    const configs: ApiKeyConfig[] = parsed.map((item: any, i: number) => ({
+      name: item.name || `api-key-${i + 1}`,
+      env: item.env || {},
+    }));
 
     logger.info(`Loaded ${configs.length} API key configs for rotation`);
     return configs;
