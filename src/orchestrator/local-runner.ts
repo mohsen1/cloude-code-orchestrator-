@@ -99,10 +99,10 @@ export class LocalOrchestrator {
   }
 
   private async setupRepository(): Promise<void> {
-    logger.info('Cloning repository...', { url: this.config.repositoryUrl });
+    logger.info('Cloning repository...', { url: this.config.repositoryUrl, branch: this.config.branch });
 
     // Clone the repo
-    const cloneArgs = ['clone', this.config.repositoryUrl, this.workspaceDir];
+    const cloneArgs = ['clone', '--branch', this.config.branch, this.config.repositoryUrl, this.workspaceDir];
     if (this.config.cloneDepth) {
       cloneArgs.push('--depth', String(this.config.cloneDepth));
     }
