@@ -32,6 +32,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Check for API key
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.error('Error: ANTHROPIC_API_KEY environment variable is required');
+    console.error('Set it with: export ANTHROPIC_API_KEY="your-api-key"');
+    process.exit(1);
+  }
+
   logger.info('Claude Code Orchestrator starting...', {
     configDir: values.config,
   });

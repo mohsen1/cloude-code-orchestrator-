@@ -95,8 +95,11 @@ export class ComposeGenerator {
       BRANCH: opts.branch,
     };
 
-    // If using API key, it will be injected via environment variable
-    // Otherwise, config files are mounted
+    // Pass API key from host environment to container
+    if (process.env.ANTHROPIC_API_KEY) {
+      environment.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+    }
+
     const volumes: string[] = [
       'repo-data:/repo', // Shared repo with .git for worktrees
     ];
