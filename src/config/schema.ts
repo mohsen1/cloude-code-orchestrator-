@@ -8,6 +8,7 @@ export const OrchestratorConfigSchema = z.object({
   branch: z.string().default('main'),
   model: z.string().optional(), // Claude model: 'haiku', 'sonnet', 'opus', or full model name
   cloneDepth: z.number().int().min(1).optional(), // shallow clone depth
+  envFiles: z.array(z.string()).optional(), // Paths to env files to copy to each worker worktree (e.g., ["/path/to/.env.local"])
   workerCount: z.number().int().min(1).max(20),
   hookServerPort: z.number().int().min(1024).max(65535).default(3000),
   healthCheckIntervalMs: z.number().int().min(5000).default(30000),

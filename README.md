@@ -49,6 +49,8 @@ Create a config directory with the following files:
 | `repositoryUrl` | string | *required* | URL of the git repository to work on |
 | `branch` | string | `"main"` | Branch to check out and work from |
 | `cloneDepth` | number | *none* | Shallow clone depth (e.g., `1` for latest commit only) |
+| `model` | string | *none* | Claude model to use (`haiku`, `sonnet`, `opus`) |
+| `envFiles` | string[] | *none* | Paths to env files to copy to each worktree (see [Environment Files](#environment-files)) |
 | `workerCount` | number | *required* | Number of worker instances (1-20) |
 | `hookServerPort` | number | `3000` | Port for the internal hook server (1024-65535) |
 | `healthCheckIntervalMs` | number | `30000` | Health check polling interval in milliseconds (min: 5000) |
@@ -110,13 +112,33 @@ Your target repository should include a `PROJECT_DIRECTION.md` file that describ
 
 ### Environment Files
 
-The orchestrator automatically copies `.env` and `.env.local` files from the main repository to each worker's worktree. This ensures environment variables are available in all parallel workspaces.
+The orchestrator copies environment files to the main workspace and each worker's worktree. This ensures secrets and environment variables are available in all parallel workspaces without being committed to git.
 
-Supported env files:
+**Automatic copying from workspace:**
 - `.env` - Main environment variables
-- `.env.local` - Local overrides (not committed to git)
+- `.env.local` - Local overrides
 
-These files are copied (not symlinked) to maintain isolation between worktrees.
+**External files via config:**
+
+Use `envFiles` in your orchestrator.json to copy secrets from outside the repository:
+
+```json
+{
+  "repositoryUrl": "https://github.com/org/repo.git",
+  "branch": "main",
+  "workerCount": 4,
+  "envFiles": [
+    "/Users/me/secrets/.env.local",
+    "/Users/me/secrets/database.env"
+  ]
+}
+```
+
+This copies the specified files to:
+- Main workspace (for Manager)
+- Each worker worktree (worker-1, worker-2, etc.)
+
+Files are copied (not symlinked) to maintain isolation between worktrees.
 
 Example PROJECT_DIRECTION.md:
 

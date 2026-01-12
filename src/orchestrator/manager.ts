@@ -193,6 +193,9 @@ export class Orchestrator {
 
     this.git = new GitManager(this.workspaceDir);
 
+    // Copy env files to main workspace (for manager)
+    await this.copyConfigEnvFiles(this.workspaceDir);
+
     // Create worktrees for workers in parallel
     const worktreesDir = `${this.workspaceDir}/worktrees`;
     await mkdir(worktreesDir, { recursive: true });
@@ -214,6 +217,7 @@ export class Orchestrator {
   }
 
   private async copyEnvFiles(sourceDir: string, destDir: string): Promise<void> {
+    // 1. Copy standard env files from workspace (if they exist)
     for (const envFile of ENV_FILES) {
       const sourcePath = join(sourceDir, envFile);
       const destPath = join(destDir, envFile);
@@ -225,6 +229,52 @@ export class Orchestrator {
         } catch (err) {
           logger.warn(`Failed to copy ${envFile} to ${destDir}`, err);
         }
+      }
+    }
+
+    // 2. Copy env files from config-specified external paths
+    if (this.config.envFiles && this.config.envFiles.length > 0) {
+      for (const sourcePath of this.config.envFiles) {
+        if (existsSync(sourcePath)) {
+          // Get just the filename from the path
+          const fileName = sourcePath.split('/').pop() || sourcePath;
+          const destPath = join(destDir, fileName);
+
+          try {
+            await copyFile(sourcePath, destPath);
+            logger.info(`Copied env file ${fileName} to worker worktree`, { source: sourcePath, dest: destPath });
+          } catch (err) {
+            logger.error(`Failed to copy env file ${sourcePath} to ${destDir}`, err);
+          }
+        } else {
+          logger.warn(`Env file not found: ${sourcePath}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Copy only config-specified env files to a directory.
+   * Used for the main workspace (manager) which doesn't have a source dir to copy from.
+   */
+  private async copyConfigEnvFiles(destDir: string): Promise<void> {
+    if (!this.config.envFiles || this.config.envFiles.length === 0) {
+      return;
+    }
+
+    for (const sourcePath of this.config.envFiles) {
+      if (existsSync(sourcePath)) {
+        const fileName = sourcePath.split('/').pop() || sourcePath;
+        const destPath = join(destDir, fileName);
+
+        try {
+          await copyFile(sourcePath, destPath);
+          logger.info(`Copied env file ${fileName} to workspace`, { source: sourcePath, dest: destPath });
+        } catch (err) {
+          logger.error(`Failed to copy env file ${sourcePath} to ${destDir}`, err);
+        }
+      } else {
+        logger.warn(`Env file not found: ${sourcePath}`);
       }
     }
   }
