@@ -85,6 +85,7 @@ export class Orchestrator {
   private git!: GitManager;
   private mergeQueue: MergeQueue;
   private reconcileInterval: NodeJS.Timeout | null = null;
+  private managerHeartbeatInterval: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
   private workspaceDir: string;
 
@@ -150,6 +151,7 @@ export class Orchestrator {
       this.rateLimitDetector.start(10000);
       this.stuckDetector.start(60000);
       this.startReconcileLoop(30000);
+      this.startManagerHeartbeat(this.config.managerHeartbeatIntervalMs);
 
       // 7. Initialize manager
       await this.initializeManager();
@@ -541,6 +543,60 @@ Worker ${workerId} pushed to branch \`worker-${workerId}\`.
     logger.info(`State reconciliation loop started (interval: ${intervalMs}ms)`);
   }
 
+  /**
+   * Manager heartbeat - periodically nudges the manager to check progress.
+   * Ensures manager stays active even without worker events.
+   */
+  private startManagerHeartbeat(intervalMs: number): void {
+    if (this.managerHeartbeatInterval) {
+      clearInterval(this.managerHeartbeatInterval);
+    }
+
+    this.managerHeartbeatInterval = setInterval(() => {
+      this.sendManagerHeartbeat().catch(err => {
+        logger.error('Manager heartbeat failed', err);
+      });
+    }, intervalMs);
+
+    logger.info(`Manager heartbeat started (interval: ${intervalMs / 60000} minutes)`);
+  }
+
+  private async sendManagerHeartbeat(): Promise<void> {
+    if (this.isShuttingDown) return;
+
+    const manager = this.instanceManager.getInstance('manager');
+    if (!manager) return;
+
+    // Only send heartbeat if manager is idle (not busy with something)
+    if (manager.status !== 'idle') {
+      logger.debug('Manager is busy, skipping heartbeat');
+      return;
+    }
+
+    // Check if manager is at Claude prompt
+    const atPrompt = await this.tmux.isAtClaudePrompt(manager.sessionName);
+    if (!atPrompt) {
+      logger.debug('Manager not at prompt, skipping heartbeat');
+      return;
+    }
+
+    logger.info('Sending manager heartbeat');
+
+    const heartbeatPrompt = `
+HEARTBEAT CHECK - Please perform a routine status check:
+
+1. Check worker progress by examining recent git commits and branch status
+2. Review any completed work that needs to be merged
+3. Identify idle workers and assign them new tasks if available
+4. Update task files if needed based on project progress
+
+If all workers are making good progress and there's nothing urgent, just respond with a brief status summary.
+`.trim();
+
+    this.instanceManager.updateStatus('manager', 'busy');
+    await this.instanceManager.sendPrompt('manager', heartbeatPrompt);
+  }
+
   private async reconcileState(): Promise<void> {
     if (this.isShuttingDown) return;
 
@@ -647,6 +703,10 @@ Worker ${workerId} pushed to branch \`worker-${workerId}\`.
     if (this.reconcileInterval) {
       clearInterval(this.reconcileInterval);
       this.reconcileInterval = null;
+    }
+    if (this.managerHeartbeatInterval) {
+      clearInterval(this.managerHeartbeatInterval);
+      this.managerHeartbeatInterval = null;
     }
 
     this.rateLimitDetector.stop();

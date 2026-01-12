@@ -9,6 +9,7 @@ export const OrchestratorConfigSchema = z.object({
   healthCheckIntervalMs: z.number().int().min(5000).default(30000),
   rateLimitCheckIntervalMs: z.number().int().min(5000).default(10000),
   stuckThresholdMs: z.number().int().min(60000).default(300000), // 5 minutes
+  managerHeartbeatIntervalMs: z.number().int().min(60000).default(600000), // 10 minutes
   maxToolUsesPerInstance: z.number().int().min(100).default(500),
   maxTotalToolUses: z.number().int().min(500).default(2000),
   maxRunDurationMinutes: z.number().int().min(10).default(120),
