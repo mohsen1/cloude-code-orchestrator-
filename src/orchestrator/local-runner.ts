@@ -102,7 +102,11 @@ export class LocalOrchestrator {
     logger.info('Cloning repository...', { url: this.config.repositoryUrl });
 
     // Clone the repo
-    await execa('git', ['clone', this.config.repositoryUrl, this.workspaceDir]);
+    const cloneArgs = ['clone', this.config.repositoryUrl, this.workspaceDir];
+    if (this.config.cloneDepth) {
+      cloneArgs.push('--depth', String(this.config.cloneDepth));
+    }
+    await execa('git', cloneArgs);
 
     this.git = new GitManager(this.workspaceDir);
 

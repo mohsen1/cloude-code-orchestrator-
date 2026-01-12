@@ -135,7 +135,7 @@ export class Orchestrator {
     logger.info('Setting up repository...');
 
     // Clone repository
-    await this.git.clone(this.config.repositoryUrl, this.config.branch, '/workspace');
+    await this.git.clone(this.config.repositoryUrl, this.config.branch, '/workspace', this.config.cloneDepth);
 
     // Create worktrees for each worker
     for (let i = 1; i <= this.config.workerCount; i++) {

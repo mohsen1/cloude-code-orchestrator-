@@ -20,12 +20,17 @@ export class GitManager {
   /**
    * Clone a repository.
    */
-  async clone(repoUrl: string, branch: string, targetDir?: string): Promise<void> {
+  async clone(repoUrl: string, branch: string, targetDir?: string, depth?: number): Promise<void> {
     const dir = targetDir || this.baseDir;
 
-    logger.info(`Cloning repository`, { url: repoUrl, branch, dir });
+    logger.info(`Cloning repository`, { url: repoUrl, branch, dir, depth });
 
-    await this.git.clone(repoUrl, dir, ['--branch', branch]);
+    const args = ['--branch', branch];
+    if (depth) {
+      args.push('--depth', String(depth));
+    }
+
+    await this.git.clone(repoUrl, dir, args);
 
     // Update git instance to use the cloned directory
     this.git.cwd(dir);

@@ -52,6 +52,7 @@ Create a config directory with the following files:
 |--------|------|---------|-------------|
 | `repositoryUrl` | string | *required* | URL of the git repository to work on |
 | `branch` | string | `"main"` | Branch to check out and work from |
+| `cloneDepth` | number | *none* | Shallow clone depth (e.g., `1` for latest commit only) |
 | `workerCount` | number | *required* | Number of worker instances (1-20) |
 | `hookServerPort` | number | `3000` | Port for the internal hook server (1024-65535) |
 | `healthCheckIntervalMs` | number | `30000` | Health check polling interval in milliseconds (min: 5000) |
