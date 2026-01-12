@@ -394,7 +394,8 @@ Please continue working.
 You are the **Manager** instance of a Claude Code Orchestrator.
 
 ## Your Environment
-- Working directory: ${this.workspaceDir} (main branch)
+- Working directory: ${this.workspaceDir}
+- **Target branch: ${this.config.branch}** (all merges go here)
 - Worker instances: ${this.config.workerCount} workers
 - Workers have worktrees at: ${this.workspaceDir}/worktrees/worker-{N}
 
@@ -430,7 +431,7 @@ You are the **Manager** instance of a Claude Code Orchestrator.
    \`\`\`bash
    git add WORKER_*.md
    git commit -m "Add worker task lists"
-   git push origin main
+   git push origin ${this.config.branch}
    \`\`\`
 
 4. **STOP** after pushing - workers will start automatically
@@ -460,12 +461,13 @@ You are **Worker ${workerId}** in a Claude Code Orchestrator.
 ## Your Environment
 - Working directory: ${worktreePath}
 - Your branch: worker-${workerId}
+- **Target branch: ${this.config.branch}** (pull updates from here, Manager merges your work here)
 
 ## Your Workflow
 
 1. **Pull latest and read your tasks**:
    \`\`\`bash
-   git pull origin main
+   git pull origin ${this.config.branch}
    cat WORKER_${workerId}_TASK_LIST.md
    \`\`\`
 
@@ -480,7 +482,7 @@ You are **Worker ${workerId}** in a Claude Code Orchestrator.
 
 4. **STOP after pushing** - wait for Manager to merge
 
-Start now: Pull main and read your task list.
+Start now: Pull ${this.config.branch} and read your task list.
     `.trim();
 
     await this.instanceManager.sendPrompt(`worker-${workerId}`, prompt);
@@ -515,9 +517,9 @@ Start now: Pull main and read your task list.
 Worker ${workerId} pushed to branch \`worker-${workerId}\`.
 
 ### Actions:
-1. Review: \`git fetch origin worker-${workerId} && git diff main...origin/worker-${workerId}\`
+1. Review: \`git fetch origin worker-${workerId} && git diff ${this.config.branch}...origin/worker-${workerId}\`
 2. Merge: \`git merge origin/worker-${workerId} --no-ff -m "Merge worker-${workerId}"\`
-3. Push: \`git push origin main\`
+3. Push: \`git push origin ${this.config.branch}\`
 4. Update WORKER_${workerId}_TASK_LIST.md (move task to Completed, set next Current Task)
 5. Commit the task list update
 6. STOP
