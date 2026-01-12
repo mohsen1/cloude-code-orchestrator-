@@ -12,17 +12,14 @@ describe('LocalConfigManager', () => {
   const apiKeyConfigs: ApiKeyConfig[] = [
     {
       name: 'api-key-1',
-      primaryApiKey: 'sk-ant-test-key-1',
-      apiKeySource: 'anthropic',
+      env: { ANTHROPIC_API_KEY: 'sk-ant-test-key-1' },
     },
     {
       name: 'z.ai-key',
       env: {
         ANTHROPIC_AUTH_TOKEN: 'test-token',
         ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
-        API_TIMEOUT_MS: '3000000',
       },
-      apiKeySource: 'z.ai',
     },
   ];
 
@@ -114,12 +111,12 @@ describe('LocalConfigManager', () => {
       expect(result?.name).toBe('z.ai-key');
     });
 
-    it('should write correct settings for standard API key', async () => {
+    it('should write correct settings with env vars', async () => {
       await configManager.assignConfig('worker-1');
       await configManager.rotateConfig('worker-1');
 
       const settings = JSON.parse(await readFile(settingsPath, 'utf-8'));
-      expect(settings).toEqual({ primaryApiKey: 'sk-ant-test-key-1' });
+      expect(settings).toEqual({ env: { ANTHROPIC_API_KEY: 'sk-ant-test-key-1' } });
     });
 
     it('should write correct settings for Z.AI env config', async () => {
@@ -132,7 +129,6 @@ describe('LocalConfigManager', () => {
         env: {
           ANTHROPIC_AUTH_TOKEN: 'test-token',
           ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
-          API_TIMEOUT_MS: '3000000',
         },
       });
     });
@@ -192,8 +188,7 @@ describe('LocalConfigManager', () => {
       await configManager.initialize();
       configManager.addApiKeyConfig({
         name: 'new-key',
-        primaryApiKey: 'sk-ant-new-key',
-        apiKeySource: 'anthropic',
+        env: { ANTHROPIC_API_KEY: 'sk-ant-new-key' },
       });
 
       const stats = configManager.getStats();

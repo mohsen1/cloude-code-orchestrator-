@@ -63,20 +63,19 @@ Create a config directory with the following files:
 
 ### api-keys.json (optional, for rate limit rotation)
 
-Configure API keys for rate limit rotation. Supports Z.AI and standard Anthropic API keys.
+Configure API keys for rate limit rotation. Each entry specifies environment variables to apply.
 
 ```json
 [
-  { "name": "z.ai-1", "primaryApiKey": "sk-ant-...", "source": "z.ai" },
-  { "name": "anthropic-1", "primaryApiKey": "sk-ant-...", "source": "anthropic" }
+  { "name": "key-1", "env": { "ANTHROPIC_API_KEY": "sk-ant-..." } },
+  { "name": "z.ai-1", "env": { "ANTHROPIC_AUTH_TOKEN": "...", "ANTHROPIC_BASE_URL": "..." } }
 ]
 ```
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `name` | Yes | Identifier for this API key |
-| `primaryApiKey` | Yes | The API key (sk-ant-...) |
-| `source` | No | Provider: `"z.ai"` or `"anthropic"` (default: `"anthropic"`) |
+| `name` | Yes | Identifier for this API key config |
+| `env` | Yes | Environment variables to apply (e.g., `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`) |
 
 ## Architecture
 

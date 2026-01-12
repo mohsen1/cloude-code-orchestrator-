@@ -28,13 +28,18 @@ async function loadApiKeyConfigs(configDir: string): Promise<ApiKeyConfig[]> {
       return [];
     }
 
-    const configs: ApiKeyConfig[] = parsed.map((item: any, i: number) => ({
-      name: item.name || `api-key-${i + 1}`,
-      primaryApiKey: item.primaryApiKey || item.apiKey || item.key,
-      env: item.env, // Z.AI style
-      settings: item.settings, // Full settings object
-      apiKeySource: item.source || item.apiKeySource || 'unknown',
-    }));
+    const configs: ApiKeyConfig[] = parsed.map((item: any, i: number) => {
+      // Support both new format (env) and legacy format (primaryApiKey)
+      let env = item.env;
+      if (!env && (item.primaryApiKey || item.apiKey || item.key)) {
+        // Convert legacy primaryApiKey to env format
+        env = { ANTHROPIC_API_KEY: item.primaryApiKey || item.apiKey || item.key };
+      }
+      return {
+        name: item.name || `api-key-${i + 1}`,
+        env: env || {},
+      };
+    });
 
     logger.info(`Loaded ${configs.length} API key configs for rotation`);
     return configs;
@@ -76,8 +81,8 @@ Config Directory Structure:
 
 api-keys.json format:
   [
-    { "name": "z.ai-1", "primaryApiKey": "sk-ant-...", "source": "z.ai" },
-    { "name": "z.ai-2", "primaryApiKey": "sk-ant-...", "source": "z.ai" }
+    { "name": "key-1", "env": { "ANTHROPIC_API_KEY": "sk-ant-..." } },
+    { "name": "z.ai-1", "env": { "ANTHROPIC_AUTH_TOKEN": "...", "ANTHROPIC_BASE_URL": "..." } }
   ]
 
 Rate Limit Rotation:
