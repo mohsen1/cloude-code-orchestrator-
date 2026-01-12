@@ -40,7 +40,7 @@ export class LocalOrchestrator {
     this.tmux = new TmuxManager();
     // Pass a mock docker manager since we're not using Docker
     this.instanceManager = new ClaudeInstanceManager(null as any, this.tmux);
-    this.configManager = new LocalConfigManager(apiKeyConfigs);
+    this.configManager = new LocalConfigManager(apiKeyConfigs, 60, config.hookServerPort);
     this.rateLimitDetector = new RateLimitDetector(
       this.tmux,
       this.instanceManager,

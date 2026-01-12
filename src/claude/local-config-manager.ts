@@ -32,11 +32,40 @@ export class LocalConfigManager {
   private apiKeyConfigs: ApiKeyConfig[] = [];
   private configStates: Map<string, ConfigState> = new Map(); // instanceId -> state
   private rateLimitCooldownMinutes: number;
+  private hookServerPort: number;
 
-  constructor(apiKeyConfigs: ApiKeyConfig[] = [], rateLimitCooldownMinutes: number = 60) {
+  constructor(apiKeyConfigs: ApiKeyConfig[] = [], rateLimitCooldownMinutes: number = 60, hookServerPort: number = 3000) {
     this.claudeSettingsPath = join(homedir(), '.claude', 'settings.json');
     this.apiKeyConfigs = apiKeyConfigs;
     this.rateLimitCooldownMinutes = rateLimitCooldownMinutes;
+    this.hookServerPort = hookServerPort;
+  }
+
+  /**
+   * Generate the hooks configuration for Claude Code settings.
+   * Hooks detect instance from tmux session name and POST to orchestrator.
+   */
+  private getHooksConfig(): Record<string, string> {
+    const hookScript = (hookName: string) => `
+SESSION=$(tmux display-message -p '#S' 2>/dev/null || echo 'unknown')
+if [[ $SESSION == "claude-manager" ]]; then
+  INSTANCE_ID="manager"
+  WORKER_ID=0
+  TYPE="manager"
+elif [[ $SESSION == claude-worker-* ]]; then
+  INSTANCE_ID="\${SESSION#claude-}"
+  WORKER_ID="\${SESSION#claude-worker-}"
+  TYPE="worker"
+else
+  exit 0
+fi
+curl -s -X POST "http://localhost:${this.hookServerPort}/hooks/${hookName}" -H "Content-Type: application/json" -d "{\\"instance_id\\":\\"$INSTANCE_ID\\",\\"worker_id\\":$WORKER_ID,\\"instance_type\\":\\"$TYPE\\"}" > /dev/null 2>&1 &
+`.trim().replace(/\n/g, '; ');
+
+    return {
+      Stop: hookScript('stop'),
+      PostToolUse: hookScript('tool_use'),
+    };
   }
 
   /**
@@ -133,16 +162,16 @@ export class LocalConfigManager {
    * Apply OAuth config (empty/minimal settings).
    */
   private async applyOAuthConfig(): Promise<void> {
-    const oauthSettings = JSON.stringify({}, null, 2);
-    await writeFile(this.claudeSettingsPath, oauthSettings);
-    logger.debug('Applied OAuth config (empty settings)');
+    const settings = { hooks: this.getHooksConfig() };
+    await writeFile(this.claudeSettingsPath, JSON.stringify(settings, null, 2));
+    logger.debug('Applied OAuth config with hooks');
   }
 
   /**
    * Apply API key config by writing env vars to Claude settings.
    */
   private async applyApiKeyConfig(config: ApiKeyConfig): Promise<void> {
-    const settings = { env: config.env };
+    const settings = { env: config.env, hooks: this.getHooksConfig() };
     await writeFile(this.claudeSettingsPath, JSON.stringify(settings, null, 2));
     logger.debug(`Applied API key config: ${config.name}`);
   }

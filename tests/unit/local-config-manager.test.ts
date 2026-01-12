@@ -77,12 +77,14 @@ describe('LocalConfigManager', () => {
       expect(configManager.getConfigType('worker-1')).toBe('oauth');
     });
 
-    it('should write empty settings for OAuth', async () => {
+    it('should write settings with hooks for OAuth', async () => {
       await configManager.initialize();
       await configManager.assignConfig('worker-1');
 
       const settings = JSON.parse(await readFile(settingsPath, 'utf-8'));
-      expect(settings).toEqual({});
+      expect(settings.hooks).toBeDefined();
+      expect(settings.hooks.Stop).toBeDefined();
+      expect(settings.hooks.PostToolUse).toBeDefined();
     });
   });
 
@@ -111,12 +113,13 @@ describe('LocalConfigManager', () => {
       expect(result?.name).toBe('z.ai-key');
     });
 
-    it('should write correct settings with env vars', async () => {
+    it('should write correct settings with env vars and hooks', async () => {
       await configManager.assignConfig('worker-1');
       await configManager.rotateConfig('worker-1');
 
       const settings = JSON.parse(await readFile(settingsPath, 'utf-8'));
-      expect(settings).toEqual({ env: { ANTHROPIC_API_KEY: 'sk-ant-test-key-1' } });
+      expect(settings.env).toEqual({ ANTHROPIC_API_KEY: 'sk-ant-test-key-1' });
+      expect(settings.hooks).toBeDefined();
     });
 
     it('should write correct settings for Z.AI env config', async () => {
@@ -125,12 +128,11 @@ describe('LocalConfigManager', () => {
       await configManager.rotateConfig('worker-1'); // to z.ai
 
       const settings = JSON.parse(await readFile(settingsPath, 'utf-8'));
-      expect(settings).toEqual({
-        env: {
-          ANTHROPIC_AUTH_TOKEN: 'test-token',
-          ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
-        },
+      expect(settings.env).toEqual({
+        ANTHROPIC_AUTH_TOKEN: 'test-token',
+        ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic',
       });
+      expect(settings.hooks).toBeDefined();
     });
 
     it('should return null when no API keys available and OAuth rate limited', async () => {
