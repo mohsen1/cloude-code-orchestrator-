@@ -34,6 +34,8 @@ const ENV_FILES = ['.env', '.env.local'];
 class MergeQueue {
   private queue: number[] = [];
   private isProcessing = false;
+  private lastProcessTime = 0;
+  private static readonly MIN_PROCESS_INTERVAL_MS = 30000; // 30 seconds between merge notifications
 
   constructor(private processFunc: (workerId: number) => Promise<void>) {}
 
@@ -47,12 +49,20 @@ class MergeQueue {
   async processNext(): Promise<void> {
     if (this.isProcessing || this.queue.length === 0) return;
 
+    // Rate limit: don't process too frequently
+    const timeSinceLastProcess = Date.now() - this.lastProcessTime;
+    if (timeSinceLastProcess < MergeQueue.MIN_PROCESS_INTERVAL_MS) {
+      logger.debug(`Merge queue: rate limited, ${Math.round((MergeQueue.MIN_PROCESS_INTERVAL_MS - timeSinceLastProcess) / 1000)}s until next process`);
+      return;
+    }
+
     this.isProcessing = true;
     const workerId = this.queue.shift()!;
 
     try {
       logger.info(`Merge queue: processing worker-${workerId} (${this.queue.length} remaining)`);
       await this.processFunc(workerId);
+      this.lastProcessTime = Date.now();
     } catch (err) {
       logger.error(`Merge queue: failed to process worker-${workerId}`, err);
       this.queue.unshift(workerId);
@@ -63,6 +73,10 @@ class MergeQueue {
 
   size(): number {
     return this.queue.length;
+  }
+
+  isCurrentlyProcessing(): boolean {
+    return this.isProcessing;
   }
 }
 
@@ -92,6 +106,11 @@ export class Orchestrator {
   // Auth configs for rotation (OAuth is used by default when no config is set)
   private authConfigs: AuthConfig[] = [];
   private authConfigIndex = 0;
+
+  // Track when each worker was last prompted to prevent over-prompting
+  private workerLastPromptTime: Map<number, number> = new Map();
+  private static readonly WORKER_PROMPT_COOLDOWN_MS = 300000; // 5 minutes between re-prompts
+  private static readonly WORKER_IDLE_THRESHOLD_MS = 300000; // 5 minutes idle before re-prompting
 
   constructor(
     private config: OrchestratorConfig,
@@ -559,14 +578,19 @@ Start now: Sync with ${this.config.branch}, then read your task list.
       logger.info(`Worker ${workerId} completed task - queueing for merge`);
       this.mergeQueue.enqueue(workerId);
 
+      // Only try to process if manager is truly idle and not in a processing cycle
       const manager = this.instanceManager.getInstance('manager');
-      if (manager && (manager.status === 'idle' || manager.status === 'ready')) {
-        this.mergeQueue.processNext().catch(err => {
-          logger.error('Failed to process merge queue', err);
-        });
+      if (manager && manager.status === 'idle' && !this.mergeQueue.isCurrentlyProcessing()) {
+        // Delay slightly to allow batching of multiple worker completions
+        setTimeout(() => {
+          this.mergeQueue.processNext().catch(err => {
+            logger.error('Failed to process merge queue', err);
+          });
+        }, 5000);
       }
     } else {
       logger.info('Manager completed task');
+      // Manager finished - immediately try to process next item in queue
       this.mergeQueue.processNext().catch(err => {
         logger.error('Failed to process merge queue after manager completion', err);
       });
@@ -807,7 +831,7 @@ If action needed: Take the action, then STOP.
       }
     }
 
-    // Re-prompt idle workers to continue working
+    // Re-prompt idle workers to continue working (with cooldown to prevent bombardment)
     if (instance.type === 'worker' && instance.status === 'idle') {
       const atPrompt = await this.tmux.isAtClaudePrompt(sessionName);
       if (atPrompt) {
@@ -815,9 +839,19 @@ If action needed: Take the action, then STOP.
           ? Date.now() - instance.lastToolUse.getTime()
           : Date.now() - instance.createdAt.getTime();
 
-        // If worker has been idle for more than 1 minute, prompt them to continue
-        if (idleTime > 60000) {
+        // Check cooldown: don't re-prompt if we recently prompted this worker
+        const lastPromptTime = this.workerLastPromptTime.get(instance.workerId) || 0;
+        const timeSinceLastPrompt = Date.now() - lastPromptTime;
+
+        // Only re-prompt if:
+        // 1. Worker has been idle for 5+ minutes AND
+        // 2. We haven't prompted them in the last 5 minutes AND
+        // 3. Manager is not currently busy processing merges
+        if (idleTime > Orchestrator.WORKER_IDLE_THRESHOLD_MS &&
+            timeSinceLastPrompt > Orchestrator.WORKER_PROMPT_COOLDOWN_MS &&
+            !this.mergeQueue.isCurrentlyProcessing()) {
           logger.info(`Worker ${instance.workerId} idle for ${Math.round(idleTime / 60000)}m, prompting to continue`);
+          this.workerLastPromptTime.set(instance.workerId, Date.now());
           await this.promptWorkerToContinue(instance.workerId);
         }
       }
