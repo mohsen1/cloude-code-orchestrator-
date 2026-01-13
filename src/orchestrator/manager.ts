@@ -572,6 +572,47 @@ Start now: Sync with ${this.config.branch}, then read your task list.
     }
   }
 
+  /**
+   * Prompt an idle worker to continue working on their next task.
+   */
+  private async promptWorkerToContinue(workerId: number): Promise<void> {
+    const worktreePath = `${this.workspaceDir}/worktrees/worker-${workerId}`;
+
+    const prompt = `
+## Continue Working
+
+Your previous task was merged. Time to work on your next task.
+
+1. **Sync with latest ${this.config.branch}**:
+   \`\`\`bash
+   git fetch origin
+   git reset --hard origin/${this.config.branch}
+   \`\`\`
+
+2. **Read your updated task list**:
+   \`\`\`bash
+   cat WORKER_${workerId}_TASK_LIST.md
+   \`\`\`
+
+3. **Work on the "Current Task"** - implement it fully
+
+4. **Commit and push when done**:
+   \`\`\`bash
+   git add -A
+   git commit -m "Complete: <task description>"
+   git push origin worker-${workerId} --force
+   \`\`\`
+
+5. **STOP after pushing**
+
+Start now: Sync and read your task list.
+    `.trim();
+
+    this.instanceManager.updateStatus(`worker-${workerId}`, 'busy');
+    await this.instanceManager.sendPrompt(`worker-${workerId}`, prompt);
+    logger.info(`Worker ${workerId} prompted to continue`);
+  }
+
   private async notifyManagerOfCompletion(workerId: number): Promise<void> {
     const prompt = `
 ## Worker ${workerId} Completed
@@ -749,6 +790,22 @@ If action needed: Take the action, then STOP.
           if (instance.type === 'worker') {
             this.handleTaskComplete(instance.workerId, 'worker');
           }
+        }
+      }
+    }
+
+    // Re-prompt idle workers to continue working
+    if (instance.type === 'worker' && instance.status === 'idle') {
+      const atPrompt = await this.tmux.isAtClaudePrompt(sessionName);
+      if (atPrompt) {
+        const idleTime = instance.lastToolUse
+          ? Date.now() - instance.lastToolUse.getTime()
+          : Date.now() - instance.createdAt.getTime();
+
+        // If worker has been idle for more than 2 minutes, prompt them to continue
+        if (idleTime > 120000) {
+          logger.info(`Worker ${instance.workerId} idle for ${Math.round(idleTime / 60000)}m, prompting to continue`);
+          await this.promptWorkerToContinue(instance.workerId);
         }
       }
     }
