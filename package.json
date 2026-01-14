@@ -8,6 +8,7 @@
     "build": "tsc",
     "build:all": "npm run build && npm run build:web",
     "prestart": "npm run build:all",
+    "postinstall": "cd web && npm install && cd ..",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "dev:web": "npm --prefix web run dev",
