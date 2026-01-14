@@ -1,4 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
+import { existsSync } from 'fs';
+import { join } from 'path';
 import { logger } from './utils/logger.js';
 
 export interface HookPayload {
@@ -11,16 +13,34 @@ export interface HookPayload {
 
 type HookHandler = (payload: HookPayload) => Promise<void>;
 
+interface HookServerOptions {
+  sessionProvider?: () => unknown;
+  uiDir?: string | null;
+}
+
+interface ResolvedUiPaths {
+  pageDir: string;
+  assetsDir?: string | null;
+}
+
 export class HookServer {
   private app: express.Application;
   private handlers: Map<string, HookHandler[]> = new Map();
   private server: ReturnType<typeof this.app.listen> | null = null;
+  private sessionProvider: (() => unknown) | null;
+  private uiDir: string | null;
+  private resolvedUi: ResolvedUiPaths | null = null;
+  private readonly corsOrigin: string;
 
-  constructor(private port: number = 3000) {
+  constructor(private port: number = 3000, options: HookServerOptions = {}) {
     this.app = express();
     this.app.use(express.json());
+    this.sessionProvider = options.sessionProvider ?? null;
+    this.uiDir = options.uiDir ?? null;
+    this.corsOrigin = process.env.ORCHESTRATOR_UI_CORS ?? '*';
     this.setupMiddleware();
     this.setupRoutes();
+    this.setupUiRoutes();
   }
 
   private setupMiddleware(): void {
@@ -86,6 +106,94 @@ export class HookServer {
         handlers: Array.from(this.handlers.keys()),
       });
     });
+
+    this.app.get('/api/session/current', (_req: Request, res: Response) => {
+      res.header('Access-Control-Allow-Origin', this.corsOrigin);
+      res.header('Vary', 'Origin');
+
+      if (!this.sessionProvider) {
+        res.status(503).json({ error: 'Session snapshot unavailable' });
+        return;
+      }
+
+      try {
+        const payload = this.sessionProvider();
+        res.json(payload);
+      } catch (err) {
+        logger.error('Failed to produce session snapshot', err);
+        res.status(500).json({ error: 'Failed to read session state' });
+      }
+    });
+  }
+
+  private setupUiRoutes(): void {
+    if (!this.uiDir || this.resolvedUi) {
+      return;
+    }
+
+    const candidate = this.resolveUiDirectory(this.uiDir);
+    if (!candidate) {
+      logger.warn('Web UI directory not found or missing index.html', { uiDir: this.uiDir });
+      return;
+    }
+
+    this.resolvedUi = candidate;
+    logger.info('Serving web UI', { uiDir: candidate.pageDir, assetsDir: candidate.assetsDir });
+
+    this.app.use('/ui', express.static(candidate.pageDir));
+
+    if (candidate.assetsDir) {
+      this.app.use('/ui/_next', express.static(candidate.assetsDir));
+    }
+
+    const root = candidate.pageDir;
+    this.app.get(['/ui', '/ui/*'], (_req: Request, res: Response) => {
+      res.sendFile(join(root as string, 'index.html'));
+    });
+
+    this.app.get('/', (_req: Request, res: Response) => {
+      res.redirect('/ui');
+    });
+  }
+
+  private resolveUiDirectory(baseDir: string): ResolvedUiPaths | null {
+    const directIndex = join(baseDir, 'index.html');
+    if (existsSync(baseDir) && existsSync(directIndex)) {
+      return {
+        pageDir: baseDir,
+        assetsDir: this.findAssetsDir(baseDir),
+      };
+    }
+
+    const nestedDir = join(baseDir, 'ui');
+    const nestedIndex = join(nestedDir, 'index.html');
+    if (existsSync(nestedDir) && existsSync(nestedIndex)) {
+      return {
+        pageDir: nestedDir,
+        assetsDir: this.findAssetsDir(baseDir) ?? this.findAssetsDir(nestedDir),
+      };
+    }
+
+    return null;
+  }
+
+  private findAssetsDir(baseDir: string): string | null {
+    const direct = join(baseDir, '_next');
+    if (existsSync(direct)) {
+      return direct;
+    }
+
+    const parent = join(baseDir, '..', '_next');
+    if (existsSync(parent)) {
+      return parent;
+    }
+
+    const twoUp = join(baseDir, '..', '..', '_next');
+    if (existsSync(twoUp)) {
+      return twoUp;
+    }
+
+    return null;
   }
 
   /**
@@ -96,6 +204,16 @@ export class HookServer {
     handlers.push(handler);
     this.handlers.set(hookName, handlers);
     logger.debug(`Registered handler for hook: ${hookName}`);
+  }
+
+  setSessionProvider(provider: (() => unknown) | null): void {
+    this.sessionProvider = provider;
+  }
+
+  setUiDirectory(uiDir: string | null): void {
+    this.uiDir = uiDir;
+    this.resolvedUi = null;
+    this.setupUiRoutes();
   }
 
   /**

@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 222 67% 6%;
+  --foreground: 220 20% 96%;
+  --card: 224 40% 10%;
+  --card-foreground: 220 20% 96%;
+  --popover: 224 40% 10%;
+  --popover-foreground: 220 20% 96%;
+  --primary: 262 83% 64%;
+  --primary-foreground: 220 20% 98%;
+  --secondary: 217 33% 17%;
+  --secondary-foreground: 210 20% 92%;
+  --muted: 217 33% 17%;
+  --muted-foreground: 218 14% 66%;
+  --accent: 180 73% 61%;
+  --accent-foreground: 221 39% 11%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 220 26% 22%;
+  --input: 220 26% 22%;
+  --ring: 263 83% 64%;
+  --radius: 1rem;
+}
+
+body {
+  font-family: var(--font-space-grotesk), sans-serif;
+  background: radial-gradient(circle at top left, rgba(56, 189, 248, 0.12), transparent 45%),
+    radial-gradient(circle at 80% 0%, rgba(139, 92, 246, 0.18), transparent 35%),
+    #050915;
+  color: hsl(var(--foreground));
+  min-height: 100vh;
+}
+
+.gradient-border {
+  position: relative;
+}
+
+.gradient-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: calc(var(--radius) + 6px);
+  padding: 1px;
+  background: linear-gradient(120deg, rgba(139, 92, 246, 0.4), rgba(14, 165, 233, 0.35));
+  -webkit-mask:
+    linear-gradient(#000, #000) content-box,
+    linear-gradient(#000, #000);
+  mask:
+    linear-gradient(#000, #000) content-box,
+    linear-gradient(#000, #000);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}

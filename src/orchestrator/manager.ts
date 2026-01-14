@@ -12,11 +12,11 @@
 import { OrchestratorConfig } from '../config/schema.js';
 import { HookServer } from '../server.js';
 import { TmuxManager } from '../tmux/session.js';
-import { ClaudeInstanceManager, ClaudeInstance } from '../claude/instance.js';
+import { ClaudeInstanceManager, ClaudeInstance, InstanceStatus, InstanceType } from '../claude/instance.js';
 import { RateLimitDetector } from '../claude/rate-limit-detector.js';
 import { registerHookHandlers } from '../claude/hook-handlers.js';
 import { GitManager } from '../git/worktree.js';
-import { CostTracker } from './cost-tracker.js';
+import { CostTracker, CostLimits } from './cost-tracker.js';
 import { StuckDetector } from './stuck-detector.js';
 import { generateClaudeSettings } from '../claude/hooks.js';
 import { execa } from 'execa';
@@ -117,6 +117,7 @@ export class Orchestrator {
   private directorHeartbeatInterval: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
   private workspaceDir: string;
+  private startTimestamp: Date | null = null;
 
   // Auth configs for rotation (OAuth is used by default when no config is set)
   private authConfigs: AuthConfig[] = [];
@@ -134,6 +135,7 @@ export class Orchestrator {
   private logBaseDir: string;
   private runLogDir: string | null;
   private logsInitialized = false;
+  private uiBuildDir: string | null;
 
   constructor(
     private config: OrchestratorConfig,
@@ -149,9 +151,13 @@ export class Orchestrator {
     this.authRotationIndex = 0;
     this.useHierarchy = this.config.workerCount > this.config.engineerManagerGroupSize;
     this.logBaseDir = this.config.logDirectory ?? workspaceDir;
+    this.uiBuildDir = this.resolveUiBuildDir();
 
     // Initialize components
-    this.hookServer = new HookServer(config.serverPort);
+    this.hookServer = new HookServer(config.serverPort, {
+      sessionProvider: () => this.getSessionSnapshot(),
+      uiDir: this.uiBuildDir,
+    });
     this.tmux = new TmuxManager();
     this.instanceManager = new ClaudeInstanceManager(this.tmux);
 
@@ -186,6 +192,7 @@ export class Orchestrator {
   async start(): Promise<void> {
     await this.initializeRunLogging();
     logger.info('Starting host-native orchestrator...');
+    this.startTimestamp = new Date();
 
     try {
       // 1. Check if we can resume from existing workspace
@@ -340,10 +347,17 @@ export class Orchestrator {
       const worktreePath = join(worktreesDir, `worker-${i}`);
 
       if (existsSync(worktreePath)) {
-        // Worktree exists - just sync it
+        // Worktree exists - just sync it (but preserve local commits on worker branch)
         logger.debug(`Syncing existing worktree for worker-${i}`);
+        const branchName = `worker-${i}`;
         await execa('git', ['-C', worktreePath, 'fetch', 'origin'], { reject: false });
-        await execa('git', ['-C', worktreePath, 'reset', '--hard', `origin/${this.config.branch}`], { reject: false });
+        // Check if the worker branch exists on origin, if so reset to it; otherwise just stay on current
+        const { exitCode } = await execa('git', ['-C', worktreePath, 'rev-parse', '--verify', `origin/${branchName}`], { reject: false });
+        if (exitCode === 0) {
+          // Worker branch exists on origin - reset to it (preserves worker's pushed work)
+          await execa('git', ['-C', worktreePath, 'reset', '--hard', `origin/${branchName}`], { reject: false });
+        }
+        // If worker branch doesn't exist on origin, leave worktree as-is to preserve local work
         await this.copyEnvFiles(this.workspaceDir, worktreePath);
       } else {
         // Worktree missing - create it
@@ -423,7 +437,7 @@ The orchestrator has been restarted. Resume your work.
 **Your role:** Worker ${workerId} reporting to ${teamLabel}
 
 **Immediate actions:**
-1. Sync with latest: \`git fetch origin && git reset --hard origin/${this.config.branch}\`
+1. Sync with your branch: \`git fetch origin && git pull origin worker-${workerId} --rebase 2>/dev/null || true\`
 2. Read your task list: \`cat WORKER_${workerId}_TASK_LIST.md\` (maintained by ${teamLabel})
 3. Work on your Current Task
 4. When done: commit, push to worker-${workerId}, and STOP
@@ -600,7 +614,13 @@ Continue working autonomously. NEVER ask questions.
 
       if (existsSync(team.worktreePath)) {
         await execa('git', ['-C', team.worktreePath, 'fetch', 'origin'], { reject: false });
-        await execa('git', ['-C', team.worktreePath, 'reset', '--hard', `origin/${this.config.branch}`], { reject: false });
+        // Check if the EM team branch exists on origin, if so reset to it; otherwise stay on current
+        const { exitCode } = await execa('git', ['-C', team.worktreePath, 'rev-parse', '--verify', `origin/${team.branchName}`], { reject: false });
+        if (exitCode === 0) {
+          // EM branch exists on origin - reset to it (preserves EM's pushed work)
+          await execa('git', ['-C', team.worktreePath, 'reset', '--hard', `origin/${team.branchName}`], { reject: false });
+        }
+        // If EM branch doesn't exist on origin, leave worktree as-is to preserve local work
         await this.copyEnvFiles(this.workspaceDir, team.worktreePath);
       } else {
         await execa('git', ['-C', this.workspaceDir, 'branch', team.branchName], { reject: false });
@@ -1037,7 +1057,7 @@ Start now: pull ${this.config.branch}, read PROJECT_DIRECTION.md, draft EM_${tea
   4. STOP after pushing and wait for your EM.
 
   ## Workflow
-  1. Sync: git fetch origin && git reset --hard origin/${this.config.branch}
+  1. Sync: git fetch origin && git pull origin worker-${workerId} --rebase 2>/dev/null || true
   2. Read WORKER_${workerId}_TASK_LIST.md (maintained by ${teamLabel}).
   3. Execute the current task fully.
   4. git add -A && git commit -m "Complete: <task>" && git push origin worker-${workerId} --force.
@@ -1344,10 +1364,10 @@ You now report to EM-${team.id}. Fetch ${team.branchName} for context and follow
 
 Your previous task was merged. Time to work on your next task.
 
-1. **Sync with latest ${this.config.branch}**:
+1. **Sync with latest ${this.config.branch}** (your work was already merged):
    \`\`\`bash
    git fetch origin
-   git reset --hard origin/${this.config.branch}
+   git rebase origin/${this.config.branch}
    \`\`\`
 
 2. **Read your updated task list**:
@@ -1802,26 +1822,180 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
   }
 
   getStatus() {
-    const queueSize = this.useHierarchy
-      ? this.directorMergeQueue?.size() ?? 0
-      : this.managerMergeQueue?.size() ?? 0;
+    const snapshot = this.getSessionSnapshot();
 
     return {
-      instances: this.instanceManager.getStats(),
-      costs: this.costTracker.getStats(),
-      directorQueueSize: queueSize,
-      teams: this.useHierarchy
-        ? this.teams.map(team => ({
+      instances: snapshot.instances,
+      costs: snapshot.costs,
+      directorQueueSize: snapshot.queues.directorQueueSize,
+      managerQueueSize: snapshot.queues.managerQueueSize,
+      teams: snapshot.queues.teams,
+      hierarchyEnabled: snapshot.meta.hierarchyEnabled,
+      authConfigsAvailable: snapshot.auth.configs.length,
+      runLogDirectory: snapshot.logs.runLogDir,
+    };
+  }
+
+  getSessionSnapshot(): SessionSnapshot {
+    const instanceStats = this.instanceManager.getStats();
+    const instances = this.instanceManager.getAllInstances();
+    const instanceList: InstanceSnapshot[] = instances.map((instance) => ({
+      id: instance.id,
+      type: instance.type,
+      status: instance.status,
+      workerId: instance.workerId,
+      currentTask: instance.currentTask,
+      lastToolUse: instance.lastToolUse ? instance.lastToolUse.toISOString() : null,
+      toolUseCount: instance.toolUseCount,
+      sessionName: instance.sessionName,
+      workDir: instance.workDir,
+      logFile: this.getSessionLogPath(instance.id),
+      authConfig: instance.apiKey ?? null,
+      createdAt: instance.createdAt.toISOString(),
+    }));
+
+    const costStats = this.costTracker.getStats();
+    const toolUsesPerInstance = Array.from(costStats.toolUsesPerInstance.entries()).map(([id, count]) => ({
+      id,
+      count,
+    }));
+
+    return {
+      meta: {
+        repositoryUrl: this.config.repositoryUrl,
+        branch: this.config.branch,
+        workspaceDir: this.workspaceDir,
+        runLogDir: this.runLogDir,
+        workerCount: this.config.workerCount,
+        hierarchyEnabled: this.useHierarchy,
+        startedAt: this.startTimestamp?.toISOString() ?? null,
+        model: this.config.model,
+      },
+      instances: {
+        total: instanceStats.total,
+        byStatus: instanceStats.byStatus,
+        totalToolUses: instanceStats.totalToolUses,
+        list: instanceList,
+      },
+      queues: {
+        directorQueueSize: this.directorMergeQueue?.size() ?? 0,
+        managerQueueSize: this.managerMergeQueue?.size() ?? 0,
+        teams: this.teams.map((team) => ({
           id: team.id,
           status: team.status,
           workers: team.workerIds,
           queueSize: team.mergeQueue.size(),
           lastAssessment: team.lastAssessment,
-        }))
-        : [],
-      hierarchyEnabled: this.useHierarchy,
-      authConfigsAvailable: this.authConfigs.length,
-      runLogDirectory: this.runLogDir,
+          branchName: team.branchName,
+          worktreePath: team.worktreePath,
+          priorityScore: team.priorityScore,
+        })),
+      },
+      costs: {
+        totalToolUses: costStats.totalToolUses,
+        runDurationMinutes: costStats.runDurationMinutes,
+        startTime: costStats.startTime.toISOString(),
+        toolUsesPerInstance,
+        limits: this.costTracker.getLimits(),
+      },
+      auth: {
+        mode: this.config.authMode,
+        configs: this.authConfigs.map((cfg) => cfg.name),
+        rotationPoolSize: this.authRotationPool.length,
+      },
+      logs: {
+        runLogDir: this.runLogDir,
+        sessions: instanceList.map((instance) => ({ id: instance.id, path: instance.logFile })),
+      },
     };
   }
+
+  private resolveUiBuildDir(): string | null {
+    const envValue = process.env.ORCHESTRATOR_UI_DIR ?? process.env.ORCHESTRATOR_UI_DIST;
+    const candidates = [envValue, join(process.cwd(), 'web', 'out', 'ui'), join(process.cwd(), 'web', 'out')];
+
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
+      const trimmed = candidate.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      const indexPath = join(trimmed, 'index.html');
+      if (existsSync(indexPath)) {
+        return trimmed;
+      }
+    }
+
+    return null;
+  }
+}
+
+export interface InstanceSnapshot {
+  id: string;
+  type: InstanceType;
+  status: InstanceStatus;
+  workerId: number;
+  currentTask?: string;
+  lastToolUse: string | null;
+  toolUseCount: number;
+  sessionName: string;
+  workDir: string;
+  logFile: string | null;
+  authConfig: string | null;
+  createdAt: string;
+}
+
+export interface TeamSnapshot {
+  id: number;
+  status: EngineeringTeam['status'];
+  workers: number[];
+  queueSize: number;
+  lastAssessment: number;
+  branchName: string;
+  worktreePath: string;
+  priorityScore: number;
+}
+
+export interface SessionSnapshot {
+  meta: {
+    repositoryUrl: string;
+    branch: string;
+    workspaceDir: string;
+    runLogDir: string | null;
+    workerCount: number;
+    hierarchyEnabled: boolean;
+    startedAt: string | null;
+    model?: string;
+  };
+  instances: {
+    total: number;
+    byStatus: Record<InstanceStatus, number>;
+    totalToolUses: number;
+    list: InstanceSnapshot[];
+  };
+  queues: {
+    directorQueueSize: number;
+    managerQueueSize: number;
+    teams: TeamSnapshot[];
+  };
+  costs: {
+    totalToolUses: number;
+    runDurationMinutes: number;
+    startTime: string;
+    toolUsesPerInstance: Array<{ id: string; count: number }>;
+    limits: CostLimits;
+  };
+  auth: {
+    mode: OrchestratorConfig['authMode'];
+    configs: string[];
+    rotationPoolSize: number;
+  };
+  logs: {
+    runLogDir: string | null;
+    sessions: Array<{ id: string; path: string | null }>;
+  };
 }

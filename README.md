@@ -21,12 +21,32 @@ The orchestrator spawns multiple Claude Code instances that work in parallel on 
 # Install dependencies
 npm install
 
-# Build
-npm run build
-
-# Run (uses authMode from orchestrator.json; defaults to OAuth)
+# Run (npm start auto-builds the orchestrator + web UI)
 npm start -- --config ./config
 ```
+
+## Web Dashboard (Next.js)
+
+The orchestrator now serves a Tailwind + shadcn/ui dashboard at `http://localhost:<serverPort>/ui`, so you can inspect the live Claude hierarchy without attaching to tmux.
+
+1. Install the web workspace deps once:
+  ```bash
+  cd web && npm install
+  ```
+2. Develop the UI with hot reload on an alternate port to avoid clashing with the hook server:
+  ```bash
+  NEXT_PUBLIC_ORCHESTRATOR_API=http://localhost:3000 npm run dev:web -- --port 4000
+  ```
+  The env var teaches the Next dev server where to fetch `/api/session/current`. The hook server allows cross-origin GETs, so browser requests from port 4000 succeed.
+3. Build the static assets so the orchestrator can serve them:
+  ```bash
+  npm run build:web
+  ```
+  This runs `next build && next export` and writes to `web/out/ui`. The hook server automatically serves those files at `/ui` the next time you start `npm start`.
+  (Optional) `npm start` now runs this export step automatically; invoke it manually only when iterating on the UI without starting the orchestrator.
+4. (Optional) Point the orchestrator at a different export folder by setting `ORCHESTRATOR_UI_DIR=/abs/path/to/out/ui` before launching.
+
+The dashboard consumes the new `/api/session/current` endpoint (served by the hook server) to stream instance status, team queues, auth rotation state, and recent log file paths.
 
 ## Configuration
 
