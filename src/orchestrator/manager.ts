@@ -20,7 +20,7 @@ import { CostTracker } from './cost-tracker.js';
 import { StuckDetector } from './stuck-detector.js';
 import { generateClaudeSettings } from '../claude/hooks.js';
 import { execa } from 'execa';
-import { mkdir, rm, copyFile, writeFile } from 'fs/promises';
+import { mkdir, rm, copyFile, writeFile, readFile, appendFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../utils/logger.js';
@@ -472,6 +472,38 @@ Continue working autonomously. NEVER ask questions.
     }
   }
 
+  private async ensureClaudeIgnored(workDir: string): Promise<void> {
+    try {
+      const { stdout } = await execa('git', ['-C', workDir, 'rev-parse', '--absolute-git-dir']);
+      const gitDir = stdout.trim();
+      if (!gitDir) {
+        return;
+      }
+
+      const infoDir = join(gitDir, 'info');
+      const excludePath = join(infoDir, 'exclude');
+      await mkdir(infoDir, { recursive: true });
+
+      let existing = '';
+      try {
+        existing = await readFile(excludePath, 'utf-8');
+      } catch {
+        existing = '';
+      }
+
+      if (existing.includes('.claude/')) {
+        return;
+      }
+
+      const needsNewline = existing.length > 0 && !existing.endsWith('\n');
+      const prefix = needsNewline ? '\n' : '';
+      await appendFile(excludePath, `${prefix}.claude/\n`);
+      logger.debug('Added .claude/ to git exclude', { workDir });
+    } catch (err) {
+      logger.warn('Failed to ensure .claude/ is ignored', { workDir, err });
+    }
+  }
+
   private async createInstances(resumeMode: boolean = false): Promise<void> {
     const startupAuth = this.getStartupAuthConfig();
 
@@ -512,14 +544,17 @@ Continue working autonomously. NEVER ask questions.
       Object.assign(env, authConfig.env);
     }
 
+    // Ensure .claude directory is ignored by git before writing files into it
+    await this.ensureClaudeIgnored(workDir);
+
     // Write hooks configuration to Claude settings.json
     const orchestratorUrl = `http://localhost:${this.config.hookServerPort}`;
     const settings = generateClaudeSettings(orchestratorUrl, id, workerId, type, { env });
     const claudeDir = join(workDir, '.claude');
     await mkdir(claudeDir, { recursive: true });
-    const settingsPath = join(claudeDir, 'settings.json');
+    const settingsPath = join(claudeDir, 'settings.local.json');
     await writeFile(settingsPath, JSON.stringify(settings, null, 2));
-    logger.debug(`Wrote hooks to settings.json`, { path: settingsPath });
+    logger.debug('Wrote hooks to settings.local.json', { path: settingsPath });
 
     // In resume mode, check if tmux session already exists
     if (resumeMode) {
