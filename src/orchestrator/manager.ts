@@ -122,6 +122,7 @@ export class Orchestrator {
   private authConfigs: AuthConfig[] = [];
   private authRotationPool: Array<AuthConfig | null> = [];
   private authRotationIndex = 0;
+  private startupAuthAssignmentIndex = 0;
 
   // Track when each worker was last prompted to prevent over-prompting
   private workerLastPromptTime: Map<number, number> = new Map();
@@ -235,7 +236,7 @@ export class Orchestrator {
         serverPort: this.config.serverPort,
         workspace: this.workspaceDir,
         authMode: this.config.authMode,
-        startupAuth: this.getStartupAuthConfig()?.name ?? 'OAuth',
+        startupAuth: this.getStartupAuthLogLabel(),
         authConfigsAvailable: this.authConfigs.length,
         hierarchyEnabled: this.useHierarchy,
         runLogDir: this.runLogDir,
@@ -642,22 +643,26 @@ Continue working autonomously. NEVER ask questions.
   }
 
   private async createInstances(resumeMode: boolean = false): Promise<void> {
-    const startupAuth = this.getStartupAuthConfig();
+    this.startupAuthAssignmentIndex = 0;
 
     if (this.useHierarchy) {
-      await this.createInstance('director', 'director', 0, this.workspaceDir, startupAuth ?? undefined, resumeMode);
+      const directorAuth = this.getStartupAuthForInstance();
+      await this.createInstance('director', 'director', 0, this.workspaceDir, directorAuth ?? undefined, resumeMode);
 
       for (const team of this.teams) {
-        await this.createInstance(team.emInstanceId, 'em', team.id, team.worktreePath, startupAuth ?? undefined, resumeMode);
+        const emAuth = this.getStartupAuthForInstance();
+        await this.createInstance(team.emInstanceId, 'em', team.id, team.worktreePath, emAuth ?? undefined, resumeMode);
       }
     } else {
-      await this.createInstance('manager', 'manager', 0, this.workspaceDir, startupAuth ?? undefined, resumeMode);
+      const managerAuth = this.getStartupAuthForInstance();
+      await this.createInstance('manager', 'manager', 0, this.workspaceDir, managerAuth ?? undefined, resumeMode);
     }
 
     // Workers
     for (let i = 1; i <= this.config.workerCount; i++) {
       const worktreePath = `${this.workspaceDir}/worktrees/worker-${i}`;
-      await this.createInstance(`worker-${i}`, 'worker', i, worktreePath, startupAuth ?? undefined, resumeMode);
+      const workerAuth = this.getStartupAuthForInstance();
+      await this.createInstance(`worker-${i}`, 'worker', i, worktreePath, workerAuth ?? undefined, resumeMode);
     }
 
     logger.info(`${resumeMode ? 'Reconnected to' : 'Created'} ${this.config.workerCount + this.teams.length + 1} Claude instances`);
@@ -842,6 +847,40 @@ Please resume. Check git status and recent changes.
       return null;
     }
     return this.authRotationPool[0];
+  }
+
+  private shouldDistributeStartupAuths(): boolean {
+    if (this.authConfigs.length < 2) {
+      return false;
+    }
+
+    if (this.config.authMode === 'api-keys-only') {
+      return true;
+    }
+
+    if (this.config.authMode === 'api-keys-first' && this.authConfigs.length > 0) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private getStartupAuthForInstance(): AuthConfig | null {
+    if (!this.shouldDistributeStartupAuths()) {
+      return this.getStartupAuthConfig();
+    }
+
+    const auth = this.authConfigs[this.startupAuthAssignmentIndex % this.authConfigs.length];
+    this.startupAuthAssignmentIndex++;
+    return auth;
+  }
+
+  private getStartupAuthLogLabel(): string {
+    if (this.shouldDistributeStartupAuths()) {
+      return `distributed across ${this.authConfigs.length} configs`;
+    }
+
+    return this.getStartupAuthConfig()?.name ?? 'OAuth';
   }
 
   /**
