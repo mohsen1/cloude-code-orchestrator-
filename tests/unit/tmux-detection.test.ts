@@ -36,6 +36,25 @@ describe('TmuxManager detection methods', () => {
       expect(result).toBe(true);
     });
 
+    it('should detect fish shell prompt', async () => {
+      // Fish shell has a specific format with ❯ AND $ on the same line
+      execaMock.mockResolvedValue({
+        stdout: '/p/t/o/w/worker-2 ❯ worker-2 $ ',
+      });
+
+      const result = await tmux.isAtShellPrompt('test-session');
+      expect(result).toBe(true);
+    });
+
+    it('should detect fish error messages', async () => {
+      execaMock.mockResolvedValue({
+        stdout: 'fish: Unknown command: You\n/p/t/o/w/worker-2 ❯ worker-2 $ ',
+      });
+
+      const result = await tmux.isAtShellPrompt('test-session');
+      expect(result).toBe(true);
+    });
+
     it('should not detect Claude prompt as shell', async () => {
       execaMock.mockResolvedValue({
         stdout: 'Claude output\n❯ ',
@@ -124,12 +143,20 @@ describe('TmuxManager detection methods', () => {
 
   describe('ensureClaudeRunning', () => {
     it('should restart Claude when at shell prompt', async () => {
-      // First call: capturePane returns shell prompt
+      // First call: isAtShellPrompt -> capturePane returns shell prompt
       execaMock.mockResolvedValueOnce({
         stdout: 'user@host:~$ ',
       });
-      // Following calls succeed
-      execaMock.mockResolvedValue({});
+      // sendControlKey for C-l
+      execaMock.mockResolvedValueOnce({});
+      // sendKeys for claude command
+      execaMock.mockResolvedValueOnce({});
+      // sendKeys Enter
+      execaMock.mockResolvedValueOnce({});
+      // waitForClaudeReady -> capturePane returns Claude UI
+      execaMock.mockResolvedValueOnce({
+        stdout: '❯ \n───────\nbypass permissions on',
+      });
 
       const result = await tmux.ensureClaudeRunning('test-session', '/workspace');
 
@@ -139,9 +166,9 @@ describe('TmuxManager detection methods', () => {
     });
 
     it('should not restart when Claude is running', async () => {
-      // capturePane returns Claude prompt
+      // capturePane returns Claude prompt (isAtShellPrompt checks)
       execaMock.mockResolvedValueOnce({
-        stdout: '❯ ',
+        stdout: '❯ \n───────\nbypass permissions',
       });
 
       const result = await tmux.ensureClaudeRunning('test-session');

@@ -80,8 +80,8 @@ export class TmuxManager {
       : 'claude --dangerously-skip-permissions';
     await this.sendKeys(sessionName, claudeCmd, true);
 
-    // Wait for Claude to initialize
-    await new Promise(r => setTimeout(r, 3000));
+    // Wait for Claude to actually be ready (not just a fixed timeout)
+    await this.waitForClaudeReady(sessionName, 30000);
   }
 
   /**
@@ -142,15 +142,41 @@ export class TmuxManager {
 
   /**
    * Check if session is at a shell prompt (Claude crashed/exited).
-   * Detects patterns like: user@host$, root#, bash-5.1$, etc.
+   * Detects patterns like: user@host$, root#, bash-5.1$, fish prompts, etc.
+   * 
+   * Fish shell prompt example: "/p/t/o/w/worker-2 ❯ worker-2 $"
+   * Claude prompt example: "❯" at the end of a line without $ or #
    */
   async isAtShellPrompt(sessionName: string): Promise<boolean> {
-    const content = await this.capturePane(sessionName, 5);
-    const lastLines = content.trim().split('\n').slice(-3).join('\n');
-    // Shell prompt patterns
-    return /[$#>]\s*$/.test(lastLines) &&
-           !lastLines.includes('❯') && // Not Claude prompt
-           !lastLines.includes('⏺'); // Not Claude output
+    const content = await this.capturePane(sessionName, 10);
+    const lastLines = content.trim().split('\n').slice(-5).join('\n');
+    const lastLine = content.trim().split('\n').slice(-1)[0] || '';
+    
+    // If we see "fish:" error messages, we're definitely at a fish shell
+    if (lastLines.includes('fish:')) {
+      return true;
+    }
+    
+    // Look for fish-specific patterns (fish shows path with ❯ AND ends with $)
+    // e.g., "/p/t/o/w/worker-2 ❯ worker-2 $"
+    if (lastLine.includes('❯') && lastLine.match(/\$\s*$/)) {
+      return true; // Fish shell prompt
+    }
+    
+    // Standard shell prompt at end of line (bash, zsh without powerline)
+    if (/[$#]\s*$/.test(lastLine) && !lastLines.includes('Claude')) {
+      // Make sure we're not in Claude - check for Claude UI indicators
+      const hasClaudeUI = lastLines.includes('⏺') || 
+                          lastLines.includes('───────') ||
+                          lastLines.includes('bypass permissions') ||
+                          lastLines.includes('Implementing') ||
+                          lastLines.includes('Reading');
+      if (!hasClaudeUI) {
+        return true;
+      }
+    }
+    
+    return false;
   }
 
   /**
@@ -239,11 +265,51 @@ export class TmuxManager {
         : `claude --dangerously-skip-permissions${modelFlag}`;
       await this.sendKeys(sessionName, cmd, true);
 
-      // Wait for Claude to start
-      await new Promise(r => setTimeout(r, 3000));
+      // Wait for Claude to start and verify it's actually running
+      await this.waitForClaudeReady(sessionName, 30000);
       return true; // Did restart
     }
     return false; // Was already running
+  }
+  
+  /**
+   * Wait for Claude to be ready (showing prompt or actively working).
+   * @param timeoutMs - Maximum time to wait in milliseconds
+   */
+  async waitForClaudeReady(sessionName: string, timeoutMs: number = 30000): Promise<boolean> {
+    const startTime = Date.now();
+    const checkInterval = 1000;
+    
+    while (Date.now() - startTime < timeoutMs) {
+      const content = await this.capturePane(sessionName, 15);
+      const lines = (content || '').trim();
+      
+      // Check for Claude UI indicators
+      const isClaudeRunning = lines.includes('❯') && !lines.match(/❯.*\$\s*$/) || // Claude prompt without shell $ at end
+                              lines.includes('⏺') || // Claude working indicator
+                              lines.includes('───────') || // Claude separator
+                              lines.includes('bypass permissions') || // Claude startup message
+                              lines.includes('Implementing') || 
+                              lines.includes('Reading') ||
+                              lines.includes('Thinking') ||
+                              lines.includes('Running');
+      
+      if (isClaudeRunning) {
+        logger.debug(`Claude is ready in ${sessionName}`);
+        return true;
+      }
+      
+      // Check if we're still at shell (Claude failed to start)
+      if (lines.includes('fish:') || lines.includes('command not found')) {
+        logger.error(`Claude failed to start in ${sessionName} - shell error detected`);
+        return false;
+      }
+      
+      await new Promise(r => setTimeout(r, checkInterval));
+    }
+    
+    logger.warn(`Timeout waiting for Claude to be ready in ${sessionName}`);
+    return false;
   }
 
   /**

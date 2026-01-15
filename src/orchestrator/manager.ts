@@ -1457,9 +1457,35 @@ When resolved, STOP.
 
     logger.info(`Rotated ${instanceId} to ${nextAuth?.name ?? 'OAuth'}`);
 
+    // CRITICAL: Wait for Claude to be actually ready before sending resume prompt
+    // This prevents sending prompts to the shell if Claude hasn't started yet
+    const newInstance = this.instanceManager.getInstance(instanceId);
+    if (newInstance) {
+      const isReady = await this.tmux.waitForClaudeReady(newInstance.sessionName, 45000);
+      if (!isReady) {
+        logger.error(`Failed to verify Claude is running for ${instanceId} after rate limit rotation`);
+        // Try to restart Claude one more time
+        await this.tmux.ensureClaudeRunning(newInstance.sessionName, newInstance.workDir, this.config.model);
+        // Wait again
+        await this.tmux.waitForClaudeReady(newInstance.sessionName, 30000);
+      }
+    }
+
     // Restore context
     if (savedTask) {
       await new Promise(r => setTimeout(r, this.timing.instanceResumeDelayMs));
+      
+      // Double-check we're not at a shell prompt before sending
+      const currentInstance = this.instanceManager.getInstance(instanceId);
+      if (currentInstance) {
+        const atShell = await this.tmux.isAtShellPrompt(currentInstance.sessionName);
+        if (atShell) {
+          logger.error(`${instanceId} still at shell after restart, attempting recovery...`);
+          await this.tmux.ensureClaudeRunning(currentInstance.sessionName, currentInstance.workDir, this.config.model);
+          await this.tmux.waitForClaudeReady(currentInstance.sessionName, 30000);
+        }
+      }
+      
       const resumePrompt = `
 You were restarted due to rate limits. Auth rotated to ${nextAuth?.name ?? 'OAuth'}.
 
