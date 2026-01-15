@@ -113,6 +113,7 @@ const DURATION_MINUTES = parseInt(values.duration!, 10);
 const WORKER_COUNT = parseInt(values.workers!, 10);
 const AUTH_CONFIG_PATH = values['auth-config'];
 const MODEL = values.model!;
+const TIMING_BASE_MS = 30000;
 
 const PROJECT_DIRECTION = `# Calculator Project
 
@@ -275,7 +276,7 @@ async function createTestConfig(branchName: string): Promise<string> {
     workerCount: WORKER_COUNT,
     engineerManagerGroupSize,
     serverPort,
-    timingBaseMs: 30000,
+    timingBaseMs: TIMING_BASE_MS,
     maxRunDurationMinutes: DURATION_MINUTES + 2,
   };
 
@@ -292,18 +293,34 @@ async function createTestConfig(branchName: string): Promise<string> {
   return configDir;
 }
 
-async function runOrchestrator(configDir: string, workspaceDir: string, durationMs: number): Promise<{ stdout: string; stderr: string }> {
-  log(`Starting orchestrator for ${durationMs / 60000} minutes...`);
+async function runOrchestrator(
+  configDir: string,
+  workspaceDir: string,
+  durationMs: number,
+  timingBaseMs: number
+): Promise<{ stdout: string; stderr: string }> {
+  const graceMs = timingBaseMs * 2;
+  const hardExitBufferMs = timingBaseMs;
+  log(`Starting orchestrator for ${durationMs / 60000} minutes (grace: ${graceMs / 1000}s)...`);
 
   const orchestratorPath = join(process.cwd(), 'dist', 'index.js');
 
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
+    let settled = false;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(termTimer);
+      clearTimeout(killTimer);
+      clearTimeout(forceTimer);
+      resolve({ stdout, stderr });
+    };
 
     const proc = execa('node', [orchestratorPath, '--config', configDir, '--workspace', workspaceDir], {
       reject: false,
-      timeout: durationMs + 30000, // Add 30s buffer
     });
 
     proc.stdout?.on('data', (data) => {
@@ -318,16 +335,37 @@ async function runOrchestrator(configDir: string, workspaceDir: string, duration
       process.stderr.write(text);
     });
 
-    // Set timeout to gracefully stop
-    setTimeout(async () => {
+    const safeKill = (signal: NodeJS.Signals) => {
+      if (proc.exitCode !== null || proc.killed || settled) {
+        return;
+      }
+      try {
+        proc.kill(signal);
+      } catch {
+        // Ignore kill errors - process may have already exited
+      }
+    };
+
+    const termTimer = setTimeout(() => {
       log('Duration reached, sending SIGTERM...');
-      proc.kill('SIGTERM');
+      safeKill('SIGTERM');
     }, durationMs);
 
+    const killTimer = setTimeout(() => {
+      log('Grace period elapsed, forcing shutdown (SIGKILL)...');
+      safeKill('SIGKILL');
+    }, durationMs + graceMs);
+
+    const forceTimer = setTimeout(() => {
+      log('Hard timeout reached, exiting e2e run.');
+      safeKill('SIGKILL');
+      finish();
+    }, durationMs + graceMs + hardExitBufferMs);
+
     proc.then(() => {
-      resolve({ stdout, stderr });
+      finish();
     }).catch(() => {
-      resolve({ stdout, stderr });
+      finish();
     });
   });
 }
@@ -413,6 +451,7 @@ async function main() {
   console.log(`Duration: ${DURATION_MINUTES} minutes`);
   console.log(`Workers: ${WORKER_COUNT}`);
   console.log(`Model: ${MODEL}`);
+  console.log(`Timing base: ${TIMING_BASE_MS} ms`);
   console.log('='.repeat(60));
 
   let configDir = '';
@@ -435,7 +474,7 @@ async function main() {
 
     // 4. Run orchestrator
     const durationMs = DURATION_MINUTES * 60 * 1000;
-    await runOrchestrator(configDir, workspaceDir, durationMs);
+    await runOrchestrator(configDir, workspaceDir, durationMs, TIMING_BASE_MS);
 
     // 5. Validate results
     const result = await validateResults(branchName);
