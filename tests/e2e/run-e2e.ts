@@ -275,8 +275,7 @@ async function createTestConfig(branchName: string): Promise<string> {
     workerCount: WORKER_COUNT,
     engineerManagerGroupSize,
     serverPort,
-    stuckThresholdMs: 180000, // 3 minutes
-    managerHeartbeatIntervalMs: 120000, // 2 minutes
+    timingBaseMs: 30000,
     maxRunDurationMinutes: DURATION_MINUTES + 2,
   };
 

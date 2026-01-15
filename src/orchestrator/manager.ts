@@ -48,7 +48,50 @@ export interface QueueState {
   version: number; // for future schema migrations
 }
 
+interface OrchestratorTiming {
+  baseMs: number;
+  workerPromptCooldownMs: number;
+  workerIdleThresholdMs: number;
+  workerReadyReinitCooldownMs: number;
+  pendingInputCooldownMs: number;
+  conflictPromptCooldownMs: number;
+  conflictRetryDelayMs: number;
+  mergeRetryDelayMs: number;
+  mergeQueueMinIntervalMs: number;
+  reconcileIntervalMs: number;
+  queueHealthIntervalMs: number;
+  logMaintenanceIntervalMs: number;
+  queueStuckThresholdMs: number;
+  rateLimitCheckIntervalMs: number;
+  rateLimitCooldownMs: number;
+  stuckCheckIntervalMs: number;
+  stuckNudgeThresholdMs: number;
+  stuckEscalationCooldownMs: number;
+  busyToIdleGraceMs: number;
+  readyStateGraceMs: number;
+  sessionBootDelayMs: number;
+  resumeEmStaggerMs: number;
+  resumeWorkerStaggerMs: number;
+  initStaggerMs: number;
+  instanceRestartDelayMs: number;
+  instanceResumeDelayMs: number;
+  queueResumeDelayMs: number;
+  directorEmInitDelayMs: number;
+  directorWorkerInitDelayMs: number;
+  managerWorkerInitDelayMs: number;
+  gitShortTimeoutMs: number;
+  gitLongTimeoutMs: number;
+}
+
 const ENV_FILES = ['.env', '.env.local'];
+const DEFAULT_MERGE_QUEUE_MAX_ATTEMPTS = 3;
+
+interface MergeQueueOptions {
+  statePath?: string;
+  onMaxAttemptsExceeded?: (workerId: number) => Promise<void>;
+  minProcessIntervalMs: number;
+  maxAttempts?: number;
+}
 
 /**
  * Queue for manager merge operations.
@@ -59,14 +102,20 @@ export class MergeQueue {
   private queue: QueueItem[] = [];
   private isProcessing = false;
   private lastProcessTime = 0;
-  private static readonly MIN_PROCESS_INTERVAL_MS = 30000; // 30 seconds between merge notifications
-  private static readonly MAX_ATTEMPTS = 3; // Max retry attempts before escalation
+  private statePath?: string;
+  private onMaxAttemptsExceeded?: (workerId: number) => Promise<void>;
+  private minProcessIntervalMs: number;
+  private maxAttempts: number;
 
   constructor(
     private processFunc: (workerId: number) => Promise<void>,
-    private statePath?: string,
-    private onMaxAttemptsExceeded?: (workerId: number) => Promise<void>
-  ) {}
+    options: MergeQueueOptions
+  ) {
+    this.statePath = options.statePath;
+    this.onMaxAttemptsExceeded = options.onMaxAttemptsExceeded;
+    this.minProcessIntervalMs = options.minProcessIntervalMs;
+    this.maxAttempts = options.maxAttempts ?? DEFAULT_MERGE_QUEUE_MAX_ATTEMPTS;
+  }
 
   /**
    * Load queue state from disk if available
@@ -144,8 +193,8 @@ export class MergeQueue {
 
     // Rate limit: don't process too frequently
     const timeSinceLastProcess = Date.now() - this.lastProcessTime;
-    if (timeSinceLastProcess < MergeQueue.MIN_PROCESS_INTERVAL_MS) {
-      logger.debug(`Merge queue: rate limited, ${Math.round((MergeQueue.MIN_PROCESS_INTERVAL_MS - timeSinceLastProcess) / 1000)}s until next process`);
+    if (timeSinceLastProcess < this.minProcessIntervalMs) {
+      logger.debug(`Merge queue: rate limited, ${Math.round((this.minProcessIntervalMs - timeSinceLastProcess) / 1000)}s until next process`);
       return;
     }
 
@@ -156,7 +205,7 @@ export class MergeQueue {
     try {
       item.lastAttemptAt = Date.now();
       item.status = 'processing';
-      logger.info(`Merge queue: processing worker-${item.id} (attempt ${item.attemptCount + 1}/${MergeQueue.MAX_ATTEMPTS}, ${this.queue.length} remaining)`);
+      logger.info(`Merge queue: processing worker-${item.id} (attempt ${item.attemptCount + 1}/${this.maxAttempts}, ${this.queue.length} remaining)`);
       await this.processFunc(item.id);
       success = true;
       this.lastProcessTime = Date.now();
@@ -169,8 +218,8 @@ export class MergeQueue {
       item.lastError = err instanceof Error ? err.message : String(err);
       item.status = 'retrying';
       
-      if (item.attemptCount >= MergeQueue.MAX_ATTEMPTS) {
-        logger.error(`Merge queue: worker-${item.id} exceeded max attempts (${MergeQueue.MAX_ATTEMPTS}), escalating`);
+      if (item.attemptCount >= this.maxAttempts) {
+        logger.error(`Merge queue: worker-${item.id} exceeded max attempts (${this.maxAttempts}), escalating`);
         item.status = 'failed';
         
         // Call escalation handler if provided
@@ -183,7 +232,7 @@ export class MergeQueue {
         }
       } else {
         // Re-enqueue for retry
-        logger.info(`Merge queue: re-enqueueing worker-${item.id} (attempt ${item.attemptCount}/${MergeQueue.MAX_ATTEMPTS})`);
+        logger.info(`Merge queue: re-enqueueing worker-${item.id} (attempt ${item.attemptCount}/${this.maxAttempts})`);
         this.queue.unshift(item);
       }
       
@@ -288,18 +337,13 @@ export class Orchestrator {
   private instanceLastPendingInputAttempt: Map<string, number> = new Map();
   private conflictLastPromptTime: Map<string, number> = new Map();
   private emPendingEscalation: Set<number> = new Set();
-  private static readonly WORKER_PROMPT_COOLDOWN_MS = 300000; // 5 minutes between re-prompts
-  private static readonly WORKER_IDLE_THRESHOLD_MS = 300000; // 5 minutes idle before re-prompting
-  private static readonly WORKER_READY_REINIT_COOLDOWN_MS = 120000; // 2 minutes between re-init attempts
-  private static readonly PENDING_INPUT_COOLDOWN_MS = 30000; // 30 seconds between Enter retries
-  private static readonly CONFLICT_PROMPT_COOLDOWN_MS = 600000; // 10 minutes between conflict prompts
-  private static readonly CONFLICT_RETRY_DELAY_MS = 300000; // 5 minutes before retrying merges on conflicts
   private teams: EngineeringTeam[] = [];
   private workerToTeam: Map<number, number> = new Map();
   private nextTeamId = 1;
   private logBaseDir: string;
   private runLogDir: string | null;
   private logsInitialized = false;
+  private timing: OrchestratorTiming;
 
   constructor(
     private config: OrchestratorConfig,
@@ -315,6 +359,7 @@ export class Orchestrator {
     this.authRotationIndex = 0;
     this.useHierarchy = this.config.workerCount > this.config.engineerManagerGroupSize;
     this.logBaseDir = this.config.logDirectory ?? workspaceDir;
+    this.timing = this.buildTiming(this.config);
 
     // Initialize components
     this.hookServer = new HookServer(config.serverPort);
@@ -324,7 +369,8 @@ export class Orchestrator {
     this.rateLimitDetector = new RateLimitDetector(
       this.tmux,
       this.instanceManager,
-      (instanceId) => this.handleRateLimit(instanceId)
+      (instanceId) => this.handleRateLimit(instanceId),
+      { cooldownMs: this.timing.rateLimitCooldownMs }
     );
 
     this.costTracker = new CostTracker(this.instanceManager, {
@@ -336,19 +382,70 @@ export class Orchestrator {
     this.stuckDetector = new StuckDetector(
       this.instanceManager,
       (id) => this.handleStuckInstance(id),
-      config.stuckThresholdMs,
+      {
+        stuckThresholdMs: config.stuckThresholdMs,
+        nudgeThresholdMs: this.timing.stuckNudgeThresholdMs,
+        escalationCooldownMs: this.timing.stuckEscalationCooldownMs,
+        interventionDelayMs: this.timing.instanceRestartDelayMs,
+      },
       this.tmux
     );
 
     if (this.useHierarchy) {
       this.initializeTeams();
       const directorQueueStatePath = this.runLogDir ? join(this.runLogDir, 'director-queue-state.json') : undefined;
-      this.directorMergeQueue = new MergeQueue((teamId) => this.notifyDirectorOfCompletion(teamId), directorQueueStatePath);
+      this.directorMergeQueue = new MergeQueue((teamId) => this.notifyDirectorOfCompletion(teamId), {
+        statePath: directorQueueStatePath,
+        minProcessIntervalMs: this.timing.mergeQueueMinIntervalMs,
+      });
     } else {
       this.directorMergeQueue = null;
       const managerQueueStatePath = this.runLogDir ? join(this.runLogDir, 'manager-queue-state.json') : undefined;
-      this.managerMergeQueue = new MergeQueue((workerId) => this.notifyManagerOfCompletion(workerId), managerQueueStatePath);
+      this.managerMergeQueue = new MergeQueue((workerId) => this.notifyManagerOfCompletion(workerId), {
+        statePath: managerQueueStatePath,
+        minProcessIntervalMs: this.timing.mergeQueueMinIntervalMs,
+      });
     }
+  }
+
+  private buildTiming(config: OrchestratorConfig): OrchestratorTiming {
+    const baseMs = config.timingBaseMs ?? config.healthCheckIntervalMs;
+    const scale = (multiplier: number) => Math.max(1, Math.round(baseMs * multiplier));
+
+    return {
+      baseMs,
+      workerPromptCooldownMs: scale(10),
+      workerIdleThresholdMs: scale(10),
+      workerReadyReinitCooldownMs: scale(4),
+      pendingInputCooldownMs: scale(1),
+      conflictPromptCooldownMs: scale(20),
+      conflictRetryDelayMs: scale(10),
+      mergeRetryDelayMs: scale(1 / 6),
+      mergeQueueMinIntervalMs: scale(1),
+      reconcileIntervalMs: scale(1),
+      queueHealthIntervalMs: scale(4),
+      logMaintenanceIntervalMs: scale(10),
+      queueStuckThresholdMs: scale(20),
+      rateLimitCheckIntervalMs: config.rateLimitCheckIntervalMs,
+      rateLimitCooldownMs: scale(4),
+      stuckCheckIntervalMs: scale(2),
+      stuckNudgeThresholdMs: scale(4),
+      stuckEscalationCooldownMs: scale(2),
+      busyToIdleGraceMs: scale(2),
+      readyStateGraceMs: scale(1),
+      sessionBootDelayMs: scale(1 / 10),
+      resumeEmStaggerMs: scale(1 / 20),
+      resumeWorkerStaggerMs: scale(1 / 30),
+      initStaggerMs: scale(1 / 15),
+      instanceRestartDelayMs: scale(1 / 15),
+      instanceResumeDelayMs: scale(1 / 6),
+      queueResumeDelayMs: scale(1 / 3),
+      directorEmInitDelayMs: scale(1 / 3),
+      directorWorkerInitDelayMs: scale(2 / 3),
+      managerWorkerInitDelayMs: scale(1 / 6),
+      gitShortTimeoutMs: scale(1 / 3),
+      gitLongTimeoutMs: scale(2 / 3),
+    };
   }
 
   async start(resumeRequested: boolean = false): Promise<void> {
@@ -397,11 +494,11 @@ export class Orchestrator {
       await this.createInstances(canResume);
 
       // 6. Start monitors
-      this.rateLimitDetector.start(10000);
-      this.stuckDetector.start(60000);
-      this.startReconcileLoop(30000);
-      this.startQueueHealthMonitor(120000); // Check every 2 minutes
-      this.startLogMaintenance(300000); // Check every 5 minutes
+      this.rateLimitDetector.start(this.timing.rateLimitCheckIntervalMs);
+      this.stuckDetector.start(this.timing.stuckCheckIntervalMs);
+      this.startReconcileLoop(this.timing.reconcileIntervalMs);
+      this.startQueueHealthMonitor(this.timing.queueHealthIntervalMs);
+      this.startLogMaintenance(this.timing.logMaintenanceIntervalMs);
       if (this.useHierarchy) {
         this.startDirectorHeartbeat(this.config.managerHeartbeatIntervalMs);
       } else {
@@ -492,7 +589,10 @@ export class Orchestrator {
       }
 
       // Check if we're on the right branch
-      const result = await runGit(this.workspaceDir, ['branch', '--show-current'], { allowFailure: true, timeoutMs: 10000 });
+      const result = await runGit(this.workspaceDir, ['branch', '--show-current'], {
+        allowFailure: true,
+        timeoutMs: this.timing.gitShortTimeoutMs,
+      });
       if (result.exitCode !== 0) {
         logger.debug('Could not get current branch');
         return false;
@@ -561,7 +661,9 @@ export class Orchestrator {
         } catch (err) {
           logger.warn(`Failed to create branch ${branchName}`, err);
         }
-        await runGit(this.workspaceDir, ['worktree', 'add', worktreePath, branchName], { timeoutMs: 20000 });
+        await runGit(this.workspaceDir, ['worktree', 'add', worktreePath, branchName], {
+          timeoutMs: this.timing.gitLongTimeoutMs,
+        });
         await this.copyEnvFiles(this.workspaceDir, worktreePath);
       }
     }
@@ -578,7 +680,7 @@ export class Orchestrator {
     logger.info('Resuming Claude instances...');
 
     // Wait for Claude to initialize in sessions
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, this.timing.sessionBootDelayMs));
 
     if (this.useHierarchy) {
       const directorPrompt = `
@@ -597,7 +699,7 @@ You are the Director. Review TEAM_STRUCTURE.md, EM_* task files, and resume coor
 You are EM-${team.id}. Re-sync ${team.branchName}, review EM_${team.id}_TASKS.md, and continue merging worker branches (${team.workerIds.map(id => `worker-${id}`).join(', ')}).
         `.trim();
         await this.instanceManager.sendPrompt(team.emInstanceId, prompt);
-        await new Promise(r => setTimeout(r, 1500));
+        await new Promise(r => setTimeout(r, this.timing.resumeEmStaggerMs));
       }
     } else {
       const prompt = `
@@ -611,7 +713,7 @@ You are the Manager. Re-sync ${this.config.branch}, inspect worker task lists, a
     // Resume workers with staggered prompts
     for (let i = 1; i <= this.config.workerCount; i++) {
       await this.resumeWorker(i);
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, this.timing.resumeWorkerStaggerMs));
     }
 
     logger.info('All instances resumed');
@@ -684,7 +786,9 @@ Continue working autonomously. NEVER ask questions.
       } catch (err) {
         logger.warn(`Failed to create branch ${branchName}`, err);
       }
-      await runGit(this.workspaceDir, ['worktree', 'add', worktreePath, branchName], { timeoutMs: 20000 });
+        await runGit(this.workspaceDir, ['worktree', 'add', worktreePath, branchName], {
+          timeoutMs: this.timing.gitLongTimeoutMs,
+        });
       await this.copyEnvFiles(this.workspaceDir, worktreePath);
 
       logger.info(`Created worktree for worker-${i}`, { path: worktreePath });
@@ -762,7 +866,10 @@ Continue working autonomously. NEVER ask questions.
 
   private async getWorktreeStatus(workDir: string): Promise<string[]> {
     try {
-      const result = await runGit(workDir, ['status', '--porcelain'], { allowFailure: true, timeoutMs: 10000 });
+      const result = await runGit(workDir, ['status', '--porcelain'], {
+        allowFailure: true,
+        timeoutMs: this.timing.gitShortTimeoutMs,
+      });
       if (result.exitCode !== 0) {
         return [];
       }
@@ -778,7 +885,7 @@ Continue working autonomously. NEVER ask questions.
     try {
       const result = await runGit(workDir, ['diff', '--name-only', '--diff-filter=U'], {
         allowFailure: true,
-        timeoutMs: 10000,
+        timeoutMs: this.timing.gitShortTimeoutMs,
       });
       if (result.exitCode !== 0) {
         return [];
@@ -798,7 +905,7 @@ Continue working autonomously. NEVER ask questions.
     try {
       const verify = await runGit(workDir, ['rev-parse', '--verify', `origin/${branchName}`], {
         allowFailure: true,
-        timeoutMs: 10000,
+        timeoutMs: this.timing.gitShortTimeoutMs,
       });
       if (verify.exitCode !== 0) {
         return null;
@@ -806,7 +913,7 @@ Continue working autonomously. NEVER ask questions.
 
       const result = await runGit(workDir, ['rev-list', '--left-right', '--count', `origin/${branchName}...${branchName}`], {
         allowFailure: true,
-        timeoutMs: 10000,
+        timeoutMs: this.timing.gitShortTimeoutMs,
       });
       if (result.exitCode !== 0) {
         return null;
@@ -947,7 +1054,7 @@ Pre-merge safety (must be clean):
 
     const now = Date.now();
     const lastPrompt = this.conflictLastPromptTime.get(instance.id) ?? 0;
-    if (now - lastPrompt < Orchestrator.CONFLICT_PROMPT_COOLDOWN_MS) {
+    if (now - lastPrompt < this.timing.conflictPromptCooldownMs) {
       logger.info(`Conflict prompt cooldown active for ${instance.id}`, {
         label,
         conflictCount: conflicts.length,
@@ -1027,7 +1134,10 @@ When resolved, STOP.
       worktreePath,
       emInstanceId: `em-${teamId}`,
       status: 'active',
-      mergeQueue: new MergeQueue((workerId) => this.notifyEngineeringManagerOfCompletion(teamId, workerId), queueStatePath),
+      mergeQueue: new MergeQueue((workerId) => this.notifyEngineeringManagerOfCompletion(teamId, workerId), {
+        statePath: queueStatePath,
+        minProcessIntervalMs: this.timing.mergeQueueMinIntervalMs,
+      }),
       lastAssessment: Date.now(),
       priorityScore: 0,
     };
@@ -1062,7 +1172,9 @@ When resolved, STOP.
         } catch (err) {
           logger.warn(`Failed to create branch ${team.branchName}`, err);
         }
-        await runGit(this.workspaceDir, ['worktree', 'add', team.worktreePath, team.branchName], { timeoutMs: 20000 });
+        await runGit(this.workspaceDir, ['worktree', 'add', team.worktreePath, team.branchName], {
+          timeoutMs: this.timing.gitLongTimeoutMs,
+        });
         await this.copyEnvFiles(this.workspaceDir, team.worktreePath);
       }
     }
@@ -1276,7 +1388,7 @@ When resolved, STOP.
 
     // Restore context
     if (savedTask) {
-      await new Promise(r => setTimeout(r, 5000));
+      await new Promise(r => setTimeout(r, this.timing.instanceResumeDelayMs));
       const resumePrompt = `
 You were restarted due to rate limits. Auth rotated to ${nextAuth?.name ?? 'OAuth'}.
 
@@ -1424,7 +1536,7 @@ The worker will resume from their branch state after restart.
       this.instanceManager.removeInstance(instanceId);
       
       // Wait a moment for cleanup
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, this.timing.instanceRestartDelayMs));
       
       // Re-create the instance with fresh session
       await this.createInstance(
@@ -1465,7 +1577,7 @@ Please resume your work.
 
   private async initializeDirector(): Promise<void> {
     // Wait for Claude to initialize
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, this.timing.sessionBootDelayMs));
 
     const prompt = `
 You are the **Director** of the Claude Code Orchestrator.
@@ -1494,12 +1606,12 @@ Document every team decision so you can justify resizing or killing teams later.
     await this.instanceManager.sendPrompt('director', prompt);
 
     // Initialize EMs and workers after Claude spins up
-    setTimeout(() => this.initializeEngineeringManagers(), 10000);
-    setTimeout(() => this.initializeWorkers(), 20000);
+    setTimeout(() => this.initializeEngineeringManagers(), this.timing.directorEmInitDelayMs);
+    setTimeout(() => this.initializeWorkers(), this.timing.directorWorkerInitDelayMs);
   }
 
   private async initializeManager(): Promise<void> {
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, this.timing.sessionBootDelayMs));
 
     const prompt = `
 You are the **Manager** of the Claude Code Orchestrator.
@@ -1525,14 +1637,14 @@ Document every decision in PROJECT_DIRECTION.md or worker task lists so future r
     `.trim();
 
     await this.instanceManager.sendPrompt('manager', prompt);
-    setTimeout(() => this.initializeWorkers(), 5000);
+    setTimeout(() => this.initializeWorkers(), this.timing.managerWorkerInitDelayMs);
   }
 
   private async initializeEngineeringManagers(): Promise<void> {
     for (const team of this.teams) {
       if (team.status !== 'active') continue;
       await this.initializeEngineeringManager(team);
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, this.timing.initStaggerMs));
     }
   }
 
@@ -1560,7 +1672,7 @@ Start now: pull ${this.config.branch}, read PROJECT_DIRECTION.md, draft EM_${tea
   private async initializeWorkers(): Promise<void> {
     for (let i = 1; i <= this.config.workerCount; i++) {
       await this.initializeWorker(i);
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, this.timing.initStaggerMs));
     }
   }
 
@@ -1710,7 +1822,7 @@ Start now: pull ${this.config.branch}, read PROJECT_DIRECTION.md, draft EM_${tea
     );
     if (hasConflicts) {
       logger.info(`EM-${teamId} has conflicts; delaying worker-${workerId} merge prompt`);
-      this.scheduleTeamMergeRetry(teamId, workerId, Orchestrator.CONFLICT_RETRY_DELAY_MS);
+      this.scheduleTeamMergeRetry(teamId, workerId, this.timing.conflictRetryDelayMs);
       return;
     }
 
@@ -1767,7 +1879,7 @@ Worker ${workerId} finished a task. Merge their branch into ${team.branchName}:
     );
     if (hasConflicts) {
       logger.info(`Director workspace has conflicts; delaying team-${teamId} escalation`);
-      this.scheduleDirectorMergeRetry(teamId, Orchestrator.CONFLICT_RETRY_DELAY_MS);
+      this.scheduleDirectorMergeRetry(teamId, this.timing.conflictRetryDelayMs);
       return;
     }
 
@@ -1808,10 +1920,11 @@ ${preMerge}
     }
   }
 
-  private scheduleTeamMergeRetry(teamId: number, workerId: number, delayMs = 5000): void {
+  private scheduleTeamMergeRetry(teamId: number, workerId: number, delayMs?: number): void {
     if (!this.useHierarchy) {
       return;
     }
+    const retryDelayMs = delayMs ?? this.timing.mergeRetryDelayMs;
     setTimeout(() => {
       if (this.isShuttingDown) {
         return;
@@ -1822,33 +1935,35 @@ ${preMerge}
       }
       team.mergeQueue.enqueue(workerId);
       this.processTeamMergeQueue(team.id);
-    }, delayMs);
+    }, retryDelayMs);
   }
 
-  private scheduleDirectorMergeRetry(teamId: number, delayMs = 5000): void {
+  private scheduleDirectorMergeRetry(teamId: number, delayMs?: number): void {
     if (!this.useHierarchy || !this.directorMergeQueue) {
       return;
     }
+    const retryDelayMs = delayMs ?? this.timing.mergeRetryDelayMs;
     setTimeout(() => {
       if (this.isShuttingDown || !this.directorMergeQueue) {
         return;
       }
       this.directorMergeQueue.enqueue(teamId);
       this.processDirectorMergeQueue();
-    }, delayMs);
+    }, retryDelayMs);
   }
 
-  private scheduleManagerMergeRetry(workerId: number, delayMs = 5000): void {
+  private scheduleManagerMergeRetry(workerId: number, delayMs?: number): void {
     if (this.useHierarchy || !this.managerMergeQueue) {
       return;
     }
+    const retryDelayMs = delayMs ?? this.timing.mergeRetryDelayMs;
     setTimeout(() => {
       if (this.isShuttingDown || !this.managerMergeQueue) {
         return;
       }
       this.managerMergeQueue.enqueue(workerId);
       this.processManagerMergeQueue();
-    }, delayMs);
+    }, retryDelayMs);
   }
 
   private async assessTeams(reason: string): Promise<void> {
@@ -1997,7 +2112,7 @@ Start now: Sync and read your task list.
     );
     if (hasConflicts) {
       logger.info(`Manager workspace has conflicts; delaying worker-${workerId} merge prompt`);
-      this.scheduleManagerMergeRetry(workerId, Orchestrator.CONFLICT_RETRY_DELAY_MS);
+      this.scheduleManagerMergeRetry(workerId, this.timing.conflictRetryDelayMs);
       return;
     }
 
@@ -2150,7 +2265,7 @@ Start now: Sync and read your task list.
    * Check health of all merge queues and log warnings for stuck items
    */
   private async checkQueueHealth(): Promise<void> {
-    const STUCK_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+    const stuckThresholdMs = this.timing.queueStuckThresholdMs;
     const warnings: string[] = [];
     const stalled: Array<{
       scope: string;
@@ -2173,7 +2288,7 @@ Start now: Sync and read your task list.
       const items = this.directorMergeQueue.getQueueItems();
       queuesReport.director = { size: this.directorMergeQueue.size(), items };
       for (const item of items) {
-        if (item.ageMs > STUCK_THRESHOLD_MS) {
+        if (item.ageMs > stuckThresholdMs) {
           stalled.push({
             scope: 'director',
             id: item.id,
@@ -2196,7 +2311,7 @@ Start now: Sync and read your task list.
       const items = this.managerMergeQueue.getQueueItems();
       queuesReport.manager = { size: this.managerMergeQueue.size(), items };
       for (const item of items) {
-        if (item.ageMs > STUCK_THRESHOLD_MS) {
+        if (item.ageMs > stuckThresholdMs) {
           stalled.push({
             scope: 'manager',
             id: item.id,
@@ -2224,7 +2339,7 @@ Start now: Sync and read your task list.
         items,
       });
       for (const item of items) {
-        if (item.ageMs > STUCK_THRESHOLD_MS) {
+        if (item.ageMs > stuckThresholdMs) {
           stalled.push({
             scope: `team-${team.id}`,
             id: item.id,
@@ -2245,7 +2360,7 @@ Start now: Sync and read your task list.
     const conflicts = await this.collectConflictState();
     await this.writeQueueHealthReport({
       generatedAt: new Date().toISOString(),
-      stuckThresholdMs: STUCK_THRESHOLD_MS,
+      stuckThresholdMs,
       queues: queuesReport,
       stalled,
       conflicts,
@@ -2484,7 +2599,7 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
       await this.tmux.ensureClaudeRunning(sessionName, instance.workDir, instance.model);
 
       if (instance.currentTaskFull && instance.status === 'busy') {
-        await new Promise(r => setTimeout(r, 5000));
+        await new Promise(r => setTimeout(r, this.timing.instanceResumeDelayMs));
         await this.instanceManager.sendPrompt(instance.id, instance.currentTaskFull);
       }
       return;
@@ -2498,7 +2613,7 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
           ? Date.now() - instance.lastToolUse.getTime()
           : 0;
 
-        if (idleTime > 60000) {
+        if (idleTime > this.timing.busyToIdleGraceMs) {
           logger.info(`Instance ${instance.id} appears done. Marking idle.`);
           this.instanceManager.updateStatus(instance.id, 'idle');
           this.instanceManager.clearTask(instance.id);
@@ -2534,8 +2649,8 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
         const timeSinceLastPrompt = Date.now() - lastPromptTime;
 
         // Only re-prompt if:
-        // 1. Worker has been idle for 5+ minutes AND
-        // 2. We haven't prompted them in the last 5 minutes AND
+        // 1. Worker has been idle past the configured threshold AND
+        // 2. We haven't prompted them within the cooldown AND
         // 3. Manager is not currently busy processing merges
         const team = this.getTeamForWorker(instance.workerId);
         const teamQueueBusy = team?.mergeQueue.isCurrentlyProcessing() ?? false;
@@ -2544,8 +2659,8 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
           ? (this.directorMergeQueue?.isCurrentlyProcessing() ?? false)
           : (this.managerMergeQueue?.isCurrentlyProcessing() ?? false);
 
-        if (idleTime > Orchestrator.WORKER_IDLE_THRESHOLD_MS &&
-          timeSinceLastPrompt > Orchestrator.WORKER_PROMPT_COOLDOWN_MS &&
+        if (idleTime > this.timing.workerIdleThresholdMs &&
+          timeSinceLastPrompt > this.timing.workerPromptCooldownMs &&
           !orchestratorQueueBusy &&
           !teamQueueBusy) {
           logger.info(`Worker ${instance.workerId} idle for ${Math.round(idleTime / 60000)}m, prompting to continue`);
@@ -2560,10 +2675,10 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
       const atPrompt = await this.tmux.isAtClaudePrompt(sessionName);
       if (atPrompt) {
         const timeSinceCreation = Date.now() - instance.createdAt.getTime();
-        // If worker has been in 'ready' state for over 30 seconds at prompt, nudge them
-        if (timeSinceCreation > 30000) {
+        // If worker has been in 'ready' state beyond the grace period, nudge them
+        if (timeSinceCreation > this.timing.readyStateGraceMs) {
           const lastInitAttempt = this.workerLastInitAttempt.get(instance.workerId) ?? 0;
-          if (Date.now() - lastInitAttempt > Orchestrator.WORKER_READY_REINIT_COOLDOWN_MS) {
+          if (Date.now() - lastInitAttempt > this.timing.workerReadyReinitCooldownMs) {
             logger.info(`Worker ${instance.workerId} stuck in ready state, initializing`);
             this.workerLastInitAttempt.set(instance.workerId, Date.now());
             await this.initializeWorker(instance.workerId);
@@ -2589,7 +2704,7 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
     if (hasPendingInput) {
       const now = Date.now();
       const lastAttempt = this.instanceLastPendingInputAttempt.get(instance.id) ?? 0;
-      if (now - lastAttempt > Orchestrator.PENDING_INPUT_COOLDOWN_MS) {
+      if (now - lastAttempt > this.timing.pendingInputCooldownMs) {
         logger.info(`Instance ${instance.id} has pending input in prompt buffer, sending Enter`);
         this.instanceLastPendingInputAttempt.set(instance.id, now);
         await this.tmux.sendEnter(sessionName);
@@ -2632,7 +2747,7 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
       authConfig
     );
 
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise(r => setTimeout(r, this.timing.instanceResumeDelayMs));
 
     if (savedTask) {
       logger.info(`Restoring task for ${instance.id}`);
@@ -2649,7 +2764,7 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
           team.mergeQueue.processNext().catch(err => {
             logger.error(`Failed to resume EM merge queue after recreation`, err);
           });
-        }, 10000); // Give instance time to fully initialize
+        }, this.timing.queueResumeDelayMs);
       }
     } else if (instance.type === 'manager' && this.managerMergeQueue && this.managerMergeQueue.size() > 0) {
       logger.info(`Resuming manager merge queue (${this.managerMergeQueue.size()} items pending)`);
@@ -2657,12 +2772,12 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
         this.managerMergeQueue!.processNext().catch(err => {
           logger.error(`Failed to resume manager merge queue after recreation`, err);
         });
-      }, 10000);
+      }, this.timing.queueResumeDelayMs);
     } else if (instance.type === 'director' && this.directorMergeQueue && this.directorMergeQueue.size() > 0) {
       logger.info(`Resuming director merge queue (${this.directorMergeQueue.size()} items pending)`);
       setTimeout(() => {
         this.processDirectorMergeQueue();
-      }, 10000);
+      }, this.timing.queueResumeDelayMs);
     }
   }
 

@@ -53,10 +53,11 @@ Create a config directory with the following files:
 | `workerCount` | number | *required* | Number of worker instances (1-20) |
 | `engineerManagerGroupSize` | number | `4` | Maximum workers per Engineering Manager team (1-8). If `workerCount` exceeds this value the Director/EM hierarchy is enabled; otherwise the legacy manager→worker flow runs. |
 | `serverPort` (`hookServerPort`) | number | `3000` | Port for the internal hook server (1024-65535). `hookServerPort` is kept for backward compatibility. |
-| `healthCheckIntervalMs` | number | `30000` | Health check polling interval in milliseconds (min: 5000) |
-| `rateLimitCheckIntervalMs` | number | `10000` | Rate limit detection interval in milliseconds (min: 5000) |
-| `stuckThresholdMs` | number | `300000` | Time without tool use before instance is considered stuck (min: 60000) |
-| `managerHeartbeatIntervalMs` | number | `600000` | Director heartbeat interval in milliseconds (min: 60000, default: 10 min) |
+| `timingBaseMs` | number | `30000` | Base timing interval in milliseconds used to derive internal timers (min: 5000) |
+| `healthCheckIntervalMs` | number | `timingBaseMs` | Legacy alias for `timingBaseMs` (min: 5000) |
+| `rateLimitCheckIntervalMs` | number | `timingBaseMs / 3` | Rate limit detection interval in milliseconds (min: 5000) |
+| `stuckThresholdMs` | number | `timingBaseMs * 6` | Time without tool use before instance is considered stuck (min: 60000) |
+| `managerHeartbeatIntervalMs` | number | `timingBaseMs * 4` | Director heartbeat interval in milliseconds (min: 60000) |
 | `maxToolUsesPerInstance` | number | `500` | Maximum tool invocations per instance before stopping (min: 100) |
 | `maxTotalToolUses` | number | `2000` | Maximum total tool invocations across all instances (min: 500) |
 | `maxRunDurationMinutes` | number | `120` | Maximum orchestrator run time in minutes (min: 10) |

@@ -22,18 +22,19 @@ export class RateLimitDetector {
   private checkInterval: NodeJS.Timeout | null = null;
   private readonly patterns: RegExp[];
   private lastHandledTime: Map<string, number> = new Map();
-  private static readonly COOLDOWN_MS = 120000; // 2 minutes cooldown after handling
+  private readonly cooldownMs: number;
 
   constructor(
     private tmux: TmuxManager,
     private instanceManager: ClaudeInstanceManager,
     private onRateLimitDetected: (instanceId: string) => Promise<void>,
-    customPatterns?: RegExp[]
+    options: { cooldownMs: number; patterns?: RegExp[] }
   ) {
-    this.patterns = customPatterns || RATE_LIMIT_PATTERNS;
+    this.patterns = options.patterns ?? RATE_LIMIT_PATTERNS;
+    this.cooldownMs = options.cooldownMs;
   }
 
-  start(intervalMs: number = 10000): void {
+  start(intervalMs: number): void {
     if (this.checkInterval) {
       this.stop();
     }
@@ -69,7 +70,7 @@ export class RateLimitDetector {
   private async checkInstance(instanceId: string, sessionName: string): Promise<void> {
     // Skip if we recently handled a rate limit for this instance (cooldown period)
     const lastHandled = this.lastHandledTime.get(instanceId) || 0;
-    if (Date.now() - lastHandled < RateLimitDetector.COOLDOWN_MS) {
+    if (Date.now() - lastHandled < this.cooldownMs) {
       logger.debug(`Skipping rate limit check for ${instanceId} (in cooldown)`);
       return;
     }
@@ -141,6 +142,6 @@ export class RateLimitDetector {
    */
   isInCooldown(instanceId: string): boolean {
     const lastHandled = this.lastHandledTime.get(instanceId) || 0;
-    return Date.now() - lastHandled < RateLimitDetector.COOLDOWN_MS;
+    return Date.now() - lastHandled < this.cooldownMs;
   }
 }

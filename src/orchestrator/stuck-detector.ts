@@ -2,8 +2,12 @@ import { ClaudeInstanceManager } from '../claude/instance.js';
 import { TmuxManager } from '../tmux/session.js';
 import { logger } from '../utils/logger.js';
 
-const DEFAULT_STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes without tool use
-const NUDGE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes - try nudging first
+export interface StuckDetectorTiming {
+  stuckThresholdMs: number;
+  nudgeThresholdMs?: number;
+  escalationCooldownMs?: number;
+  interventionDelayMs?: number;
+}
 
 /**
  * Tracks recovery attempts for an instance
@@ -17,16 +21,22 @@ interface RecoveryState {
 export class StuckDetector {
   private checkInterval: NodeJS.Timeout | null = null;
   private stuckThresholdMs: number;
+  private nudgeThresholdMs: number;
+  private escalationCooldownMs: number;
+  private interventionDelayMs: number;
   private nudgedInstances: Set<string> = new Set(); // Track which instances we've nudged
   private recoveryStates: Map<string, RecoveryState> = new Map(); // Track recovery attempts
 
   constructor(
     private instanceManager: ClaudeInstanceManager,
     private onStuck: (instanceId: string) => Promise<void>,
-    stuckThresholdMs?: number,
+    timing: StuckDetectorTiming,
     private tmux?: TmuxManager
   ) {
-    this.stuckThresholdMs = stuckThresholdMs ?? DEFAULT_STUCK_THRESHOLD_MS;
+    this.stuckThresholdMs = timing.stuckThresholdMs;
+    this.nudgeThresholdMs = timing.nudgeThresholdMs ?? Math.round(this.stuckThresholdMs * 0.4);
+    this.escalationCooldownMs = timing.escalationCooldownMs ?? Math.round(this.stuckThresholdMs * 0.2);
+    this.interventionDelayMs = timing.interventionDelayMs ?? Math.max(1, Math.round(this.stuckThresholdMs / 150));
   }
 
   /**
@@ -39,7 +49,7 @@ export class StuckDetector {
   /**
    * Start monitoring for stuck instances.
    */
-  start(intervalMs: number = 60000): void {
+  start(intervalMs: number): void {
     if (this.checkInterval) {
       this.stop();
     }
@@ -95,8 +105,8 @@ export class StuckDetector {
         this.recoveryStates.set(instance.id, recoveryState);
       }
 
-      // STAGE 1: Nudge (2 minutes) - try to auto-answer prompts
-      if (idleTime > NUDGE_THRESHOLD_MS && idleTime < this.stuckThresholdMs) {
+      // STAGE 1: Nudge - try to auto-answer prompts
+      if (idleTime > this.nudgeThresholdMs && idleTime < this.stuckThresholdMs) {
         if (!this.nudgedInstances.has(instance.id) && this.tmux) {
           await this.tryNudge(instance.id, instance.sessionName);
           this.nudgedInstances.add(instance.id);
@@ -108,8 +118,8 @@ export class StuckDetector {
 
       // STAGE 2+: Hard interventions (threshold reached)
       if (idleTime > this.stuckThresholdMs) {
-        // Wait at least 1 minute between escalation attempts
-        if (now - recoveryState.lastAttemptTime < 60000) {
+        // Wait between escalation attempts
+        if (now - recoveryState.lastAttemptTime < this.escalationCooldownMs) {
           continue;
         }
 
@@ -123,7 +133,7 @@ export class StuckDetector {
           try {
             if (this.tmux) {
               await this.tmux.sendControlKey(instance.sessionName, 'C-c');
-              await new Promise(r => setTimeout(r, 2000));
+              await new Promise(r => setTimeout(r, this.interventionDelayMs));
               await this.tmux.sendKeys(instance.sessionName, '', true); // Send Enter to clear
             }
 
@@ -215,6 +225,9 @@ export class StuckDetector {
    */
   setThreshold(thresholdMs: number): void {
     this.stuckThresholdMs = thresholdMs;
+    this.nudgeThresholdMs = Math.round(this.stuckThresholdMs * 0.4);
+    this.escalationCooldownMs = Math.round(this.stuckThresholdMs * 0.2);
+    this.interventionDelayMs = Math.max(1, Math.round(this.stuckThresholdMs / 150));
     logger.info(`Stuck detector threshold updated: ${thresholdMs}ms`);
   }
 

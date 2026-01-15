@@ -111,6 +111,7 @@ async function main(): Promise<void> {
     await orchestrator.start(values.resume);
 
     // Log status periodically
+    const statusIntervalMs = Math.round((config.timingBaseMs ?? config.healthCheckIntervalMs) * 2);
     const statusInterval = setInterval(() => {
       const status = orchestrator.getStatus();
       logger.info('Orchestrator status', {
@@ -121,7 +122,7 @@ async function main(): Promise<void> {
           hierarchyEnabled: status.hierarchyEnabled,
         authConfigsAvailable: status.authConfigsAvailable,
       });
-    }, 60000);
+    }, statusIntervalMs);
 
     // Handle cleanup of status interval on shutdown
     process.on('exit', () => {

@@ -17,18 +17,28 @@ export const OrchestratorConfigSchema = z
     workerCount: z.number().int().min(1).max(20),
     hookServerPort: portSchema.default(3000),
     serverPort: portSchema.optional(),
-    healthCheckIntervalMs: z.number().int().min(5000).default(30000),
-    rateLimitCheckIntervalMs: z.number().int().min(5000).default(10000),
-    stuckThresholdMs: z.number().int().min(60000).default(300000), // 5 minutes
-    managerHeartbeatIntervalMs: z.number().int().min(60000).default(600000), // 10 minutes
+    timingBaseMs: z.number().int().min(5000).optional(),
+    healthCheckIntervalMs: z.number().int().min(5000).optional(),
+    rateLimitCheckIntervalMs: z.number().int().min(5000).optional(),
+    stuckThresholdMs: z.number().int().min(60000).optional(),
+    managerHeartbeatIntervalMs: z.number().int().min(60000).optional(),
     maxToolUsesPerInstance: z.number().int().min(100).default(500),
     maxTotalToolUses: z.number().int().min(500).default(2000),
     maxRunDurationMinutes: z.number().int().min(1).default(120), // min 1 minute for testing
   })
   .transform((config) => {
     const resolvedPort = config.serverPort ?? config.hookServerPort;
+    const timingBaseMs = Math.round(config.timingBaseMs ?? config.healthCheckIntervalMs ?? 30000);
+    const rateLimitCheckIntervalMs = config.rateLimitCheckIntervalMs ?? Math.max(5000, Math.round(timingBaseMs / 3));
+    const stuckThresholdMs = config.stuckThresholdMs ?? Math.max(60000, Math.round(timingBaseMs * 6));
+    const managerHeartbeatIntervalMs = config.managerHeartbeatIntervalMs ?? Math.max(60000, Math.round(timingBaseMs * 4));
     return {
       ...config,
+      timingBaseMs,
+      healthCheckIntervalMs: timingBaseMs,
+      rateLimitCheckIntervalMs,
+      stuckThresholdMs,
+      managerHeartbeatIntervalMs,
       hookServerPort: resolvedPort,
       serverPort: resolvedPort,
     };
