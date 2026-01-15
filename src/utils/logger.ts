@@ -35,13 +35,13 @@ const createFileTransports = (dir: string): TransportStream[] => {
     new winston.transports.File({
       filename: join(dir, 'error.log'),
       level: 'error',
-      maxsize: 5242880, // 5MB
-      maxFiles: 5,
+      maxsize: 1048576, // 1MB
+      maxFiles: 3,
     }),
     new winston.transports.File({
       filename: join(dir, 'combined.log'),
-      maxsize: 5242880, // 5MB
-      maxFiles: 5,
+      maxsize: 1048576, // 1MB
+      maxFiles: 3,
     }),
   ];
 };

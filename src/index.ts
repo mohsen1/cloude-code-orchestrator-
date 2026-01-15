@@ -26,6 +26,12 @@ async function main(): Promise<void> {
         short: 'h',
         description: 'Show help',
       },
+      resume: {
+        type: 'boolean',
+        short: 'r',
+        description: 'Resume from existing workspace if possible',
+        default: false,
+      },
     },
   });
 
@@ -102,7 +108,7 @@ async function main(): Promise<void> {
 
   // Start orchestrator
   try {
-    await orchestrator.start();
+    await orchestrator.start(values.resume);
 
     // Log status periodically
     const statusInterval = setInterval(() => {
@@ -261,6 +267,7 @@ Usage:
 Options:
   -c, --config <path>     Path to config directory (required)
   -w, --workspace <path>  Path to workspace directory (default: /tmp/orchestrator-workspace)
+  -r, --resume            Resume from existing workspace if possible
   -h, --help              Show this help message
 
 Authentication:

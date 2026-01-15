@@ -234,6 +234,7 @@ export class Orchestrator {
   private managerHeartbeatInterval: NodeJS.Timeout | null = null;
   private directorHeartbeatInterval: NodeJS.Timeout | null = null;
   private queueHealthInterval: NodeJS.Timeout | null = null;
+  private logMaintenanceInterval: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
   private workspaceDir: string;
   private startTimestamp: Date | null = null;
@@ -305,14 +306,25 @@ export class Orchestrator {
     }
   }
 
-  async start(): Promise<void> {
+  async start(resumeRequested: boolean = false): Promise<void> {
     await this.initializeRunLogging();
     logger.info('Starting host-native orchestrator...');
     this.startTimestamp = new Date();
 
     try {
       // 1. Check if we can resume from existing workspace
-      const canResume = await this.canResumeFromExisting();
+      let canResume = false;
+      
+      if (resumeRequested) {
+        canResume = await this.canResumeFromExisting();
+        if (!canResume) {
+          logger.warn('Resume requested but workspace is not resumable (no git repo found). Starting fresh.');
+        } else {
+          logger.info('Resume requested and workspace is resumable.');
+        }
+      } else {
+        logger.info('Starting fresh (resume not requested).');
+      }
 
       // 2. Start hook server
       await this.hookServer.start();
@@ -344,6 +356,7 @@ export class Orchestrator {
       this.stuckDetector.start(60000);
       this.startReconcileLoop(30000);
       this.startQueueHealthMonitor(120000); // Check every 2 minutes
+      this.startLogMaintenance(300000); // Check every 5 minutes
       if (this.useHierarchy) {
         this.startDirectorHeartbeat(this.config.managerHeartbeatIntervalMs);
       } else {
@@ -900,6 +913,7 @@ Continue working autonomously. NEVER ask questions.
       createdAt: new Date(),
       apiKey: authConfig?.name, // Store auth config name for reference
       model: this.config.model, // Store model for restarts
+      logFile: sessionLogPath ?? undefined,
     };
 
     this.instanceManager.addInstance(instance);
@@ -1710,6 +1724,49 @@ Start now: Sync and read your task list.
   }
 
   /**
+   * Start log maintenance loop to cap session logs
+   */
+  private startLogMaintenance(intervalMs: number): void {
+    if (this.logMaintenanceInterval) {
+      clearInterval(this.logMaintenanceInterval);
+    }
+
+    this.logMaintenanceInterval = setInterval(() => {
+      this.maintainLogs().catch(err => {
+        logger.error('Log maintenance failed', err);
+      });
+    }, intervalMs);
+
+    logger.info(`Log maintenance started (interval: ${intervalMs / 60000} minutes)`);
+  }
+
+  /**
+   * Cap all session log files to the last 1000 lines
+   */
+  private async maintainLogs(): Promise<void> {
+    const instances = this.instanceManager.getAllInstances();
+    const MAX_LINES = 1000;
+
+    for (const instance of instances) {
+      if (!instance.logFile || !existsSync(instance.logFile)) {
+        continue;
+      }
+
+      try {
+        // Use tail to get the last 1000 lines efficiently
+        const { stdout } = await execa('tail', ['-n', MAX_LINES.toString(), instance.logFile]);
+        
+        // Only write back if it's actually been truncated or changed
+        // To avoid unnecessary writes, we could check file length but tail is fast
+        await writeFile(instance.logFile, stdout, 'utf-8');
+        logger.debug(`Maintained log file for ${instance.id}`);
+      } catch (err) {
+        logger.warn(`Failed to maintain log for ${instance.id}: ${instance.logFile}`, err);
+      }
+    }
+  }
+
+  /**
    * Check health of all merge queues and log warnings for stuck items
    */
   private async checkQueueHealth(): Promise<void> {
@@ -2124,6 +2181,10 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
     if (this.directorHeartbeatInterval) {
       clearInterval(this.directorHeartbeatInterval);
       this.directorHeartbeatInterval = null;
+    }
+    if (this.logMaintenanceInterval) {
+      clearInterval(this.logMaintenanceInterval);
+      this.logMaintenanceInterval = null;
     }
 
     this.rateLimitDetector.stop();

@@ -25,6 +25,7 @@ export interface ClaudeInstance {
   createdAt: Date;
   apiKey?: string; // If set, uses this key instead of OAuth
   model?: string; // Claude model to use (e.g., 'haiku', 'sonnet', 'opus')
+  logFile?: string; // Path to the tmux log file
 }
 
 export class ClaudeInstanceManager {
