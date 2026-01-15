@@ -155,6 +155,13 @@ export class MergeQueue {
   }
 
   /**
+   * Save queue state to disk (public API for pause/resume)
+   */
+  async persistState(): Promise<void> {
+    await this.saveState();
+  }
+
+  /**
    * Save queue state to disk
    */
   private async saveState(): Promise<void> {
@@ -347,16 +354,21 @@ export class Orchestrator {
   private runLogDir: string | null;
   private logsInitialized = false;
   private timing: OrchestratorTiming;
+  private configDir: string | null = null;
+  private isPaused = false;
+  private pauseCheckInterval: NodeJS.Timeout | null = null;
 
   constructor(
     private config: OrchestratorConfig,
     workspaceDir: string = '/tmp/orchestrator-workspace',
     authConfigs: AuthConfig[] = [],
-    runLogDir?: string
+    runLogDir?: string,
+    configDir?: string
   ) {
     this.workspaceDir = workspaceDir;
     this.authConfigs = authConfigs;
     this.runLogDir = runLogDir ?? null;
+    this.configDir = configDir ?? null;
     this.repoName = extractRepoName(this.config.repositoryUrl);
     this.validateAuthMode();
     this.authRotationPool = this.buildAuthRotationPool();
@@ -401,6 +413,7 @@ export class Orchestrator {
       this.directorMergeQueue = new MergeQueue((teamId) => this.notifyDirectorOfCompletion(teamId), {
         statePath: directorQueueStatePath,
         minProcessIntervalMs: this.timing.mergeQueueMinIntervalMs,
+        maxAttempts: 10, // Higher because busy state now counts as attempt
       });
     } else {
       this.directorMergeQueue = null;
@@ -408,6 +421,7 @@ export class Orchestrator {
       this.managerMergeQueue = new MergeQueue((workerId) => this.notifyManagerOfCompletion(workerId), {
         statePath: managerQueueStatePath,
         minProcessIntervalMs: this.timing.mergeQueueMinIntervalMs,
+        maxAttempts: 10, // Higher because busy state now counts as attempt
       });
     }
   }
@@ -505,6 +519,9 @@ export class Orchestrator {
       this.startReconcileLoop(this.timing.reconcileIntervalMs);
       this.startQueueHealthMonitor(this.timing.queueHealthIntervalMs);
       this.startLogMaintenance(this.timing.logMaintenanceIntervalMs);
+      if (this.configDir) {
+        this.startPauseCheckLoop(5000); // Check every 5 seconds
+      }
       if (this.useHierarchy) {
         this.startDirectorHeartbeat(this.config.managerHeartbeatIntervalMs);
       } else {
@@ -1204,6 +1221,7 @@ When resolved, STOP.
       mergeQueue: new MergeQueue((workerId) => this.notifyEngineeringManagerOfCompletion(teamId, workerId), {
         statePath: queueStatePath,
         minProcessIntervalMs: this.timing.mergeQueueMinIntervalMs,
+        maxAttempts: 10, // Higher because busy state now counts as attempt
       }),
       lastAssessment: Date.now(),
       priorityScore: 0,
@@ -1906,8 +1924,7 @@ Start now: pull ${this.config.branch}, read PROJECT_DIRECTION.md, draft EM_${tea
     const ready = await this.canPromptInstance(emInstance);
     if (!ready) {
       logger.info(`EM-${teamId} busy - deferring worker-${workerId} merge prompt`);
-      this.scheduleTeamMergeRetry(teamId, workerId);
-      return;
+      throw new Error(`EM-${teamId} not ready for merge prompt`);
     }
 
     const hasConflicts = await this.maybePromptConflictResolution(
@@ -1919,8 +1936,7 @@ Start now: pull ${this.config.branch}, read PROJECT_DIRECTION.md, draft EM_${tea
     );
     if (hasConflicts) {
       logger.info(`EM-${teamId} has conflicts; delaying worker-${workerId} merge prompt`);
-      this.scheduleTeamMergeRetry(teamId, workerId, this.timing.conflictRetryDelayMs);
-      return;
+      throw new Error(`EM-${teamId} has conflicts, cannot process merge`);
     }
 
     const preMerge = await this.buildPreMergePrompt(team.worktreePath);
@@ -1963,8 +1979,7 @@ Worker ${workerId} finished a task. Merge their branch into ${team.branchName}:
     const ready = await this.canPromptInstance(director);
     if (!ready) {
       logger.info('Director busy - deferring escalation', { teamId });
-      this.scheduleDirectorMergeRetry(teamId);
-      return;
+      throw new Error('Director not ready for escalation');
     }
 
     const hasConflicts = await this.maybePromptConflictResolution(
@@ -1976,8 +1991,7 @@ Worker ${workerId} finished a task. Merge their branch into ${team.branchName}:
     );
     if (hasConflicts) {
       logger.info(`Director workspace has conflicts; delaying team-${teamId} escalation`);
-      this.scheduleDirectorMergeRetry(teamId, this.timing.conflictRetryDelayMs);
-      return;
+      throw new Error('Director has conflicts, cannot process escalation');
     }
 
     const preMerge = await this.buildPreMergePrompt(this.workspaceDir);
@@ -2015,52 +2029,6 @@ ${preMerge}
       logger.warn('Failed to inspect tmux prompt state', { instanceId: instance?.id, err });
       return false;
     }
-  }
-
-  private scheduleTeamMergeRetry(teamId: number, workerId: number, delayMs?: number): void {
-    if (!this.useHierarchy) {
-      return;
-    }
-    const retryDelayMs = delayMs ?? this.timing.mergeRetryDelayMs;
-    setTimeout(() => {
-      if (this.isShuttingDown) {
-        return;
-      }
-      const team = this.getTeam(teamId);
-      if (!team || team.status !== 'active') {
-        return;
-      }
-      team.mergeQueue.enqueue(workerId);
-      this.processTeamMergeQueue(team.id);
-    }, retryDelayMs);
-  }
-
-  private scheduleDirectorMergeRetry(teamId: number, delayMs?: number): void {
-    if (!this.useHierarchy || !this.directorMergeQueue) {
-      return;
-    }
-    const retryDelayMs = delayMs ?? this.timing.mergeRetryDelayMs;
-    setTimeout(() => {
-      if (this.isShuttingDown || !this.directorMergeQueue) {
-        return;
-      }
-      this.directorMergeQueue.enqueue(teamId);
-      this.processDirectorMergeQueue();
-    }, retryDelayMs);
-  }
-
-  private scheduleManagerMergeRetry(workerId: number, delayMs?: number): void {
-    if (this.useHierarchy || !this.managerMergeQueue) {
-      return;
-    }
-    const retryDelayMs = delayMs ?? this.timing.mergeRetryDelayMs;
-    setTimeout(() => {
-      if (this.isShuttingDown || !this.managerMergeQueue) {
-        return;
-      }
-      this.managerMergeQueue.enqueue(workerId);
-      this.processManagerMergeQueue();
-    }, retryDelayMs);
   }
 
   private async assessTeams(reason: string): Promise<void> {
@@ -2196,8 +2164,7 @@ Start now: Sync and read your task list.
     const ready = await this.canPromptInstance(manager);
     if (!ready) {
       logger.info(`Manager busy - deferring worker-${workerId} merge prompt`);
-      this.scheduleManagerMergeRetry(workerId);
-      return;
+      throw new Error('Manager not ready for merge prompt');
     }
 
     const hasConflicts = await this.maybePromptConflictResolution(
@@ -2209,8 +2176,7 @@ Start now: Sync and read your task list.
     );
     if (hasConflicts) {
       logger.info(`Manager workspace has conflicts; delaying worker-${workerId} merge prompt`);
-      this.scheduleManagerMergeRetry(workerId, this.timing.conflictRetryDelayMs);
-      return;
+      throw new Error('Manager has conflicts, cannot process merge');
     }
 
     const preMerge = await this.buildPreMergePrompt(this.workspaceDir);
@@ -2878,6 +2844,117 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
     }
   }
 
+  /**
+   * Check for pause signal from CLI and handle graceful pause
+   */
+  private async checkForPauseSignal(): Promise<void> {
+    if (!this.configDir || this.isPaused) return;
+
+    const stateFile = join(this.configDir, 'state.json');
+    if (!existsSync(stateFile)) return;
+
+    try {
+      const stateContent = await readFile(stateFile, 'utf-8');
+      const state = JSON.parse(stateContent);
+
+      if (state.paused && !state.acknowledgedAt) {
+        logger.info('Pause signal detected, initiating graceful pause...');
+        await this.performGracefulPause(stateFile, state);
+      }
+    } catch (err) {
+      // Ignore read errors - file might be being written
+    }
+  }
+
+  /**
+   * Perform a graceful pause - stop loops but keep tmux sessions alive
+   */
+  private async performGracefulPause(stateFile: string, state: Record<string, unknown>): Promise<void> {
+    this.isPaused = true;
+    logger.info('Performing graceful pause...');
+
+    // Stop all periodic loops
+    if (this.reconcileInterval) {
+      clearInterval(this.reconcileInterval);
+      this.reconcileInterval = null;
+    }
+    if (this.queueHealthInterval) {
+      clearInterval(this.queueHealthInterval);
+      this.queueHealthInterval = null;
+    }
+    if (this.managerHeartbeatInterval) {
+      clearInterval(this.managerHeartbeatInterval);
+      this.managerHeartbeatInterval = null;
+    }
+    if (this.directorHeartbeatInterval) {
+      clearInterval(this.directorHeartbeatInterval);
+      this.directorHeartbeatInterval = null;
+    }
+    if (this.logMaintenanceInterval) {
+      clearInterval(this.logMaintenanceInterval);
+      this.logMaintenanceInterval = null;
+    }
+    if (this.pauseCheckInterval) {
+      clearInterval(this.pauseCheckInterval);
+      this.pauseCheckInterval = null;
+    }
+
+    // Stop detectors
+    this.rateLimitDetector.stop();
+    this.stuckDetector.stop();
+
+    // Persist queue states for resume
+    await this.persistAllQueueStates();
+
+    // Log stats before pausing
+    this.costTracker.logStats();
+
+    // Write acknowledgment so CLI knows pause is complete
+    state.acknowledgedAt = new Date().toISOString();
+    state.instanceCount = this.instanceManager.getAllInstances().length;
+    await writeFile(stateFile, JSON.stringify(state, null, 2));
+
+    logger.info('Orchestrator paused successfully. Tmux sessions preserved for resume.');
+    logger.info('Run "cco resume --config <path>" to continue.');
+  }
+
+  /**
+   * Persist all queue states for later resume
+   */
+  private async persistAllQueueStates(): Promise<void> {
+    try {
+      if (this.directorMergeQueue) {
+        await this.directorMergeQueue.persistState();
+      }
+      if (this.managerMergeQueue) {
+        await this.managerMergeQueue.persistState();
+      }
+      for (const team of this.teams) {
+        await team.mergeQueue.persistState();
+      }
+      logger.info('Queue states persisted to disk');
+    } catch (err) {
+      logger.error('Failed to persist queue states', err);
+    }
+  }
+
+  /**
+   * Start periodic pause signal checking
+   */
+  private startPauseCheckLoop(intervalMs: number): void {
+    if (this.pauseCheckInterval) {
+      clearInterval(this.pauseCheckInterval);
+    }
+
+    this.pauseCheckInterval = setInterval(() => {
+      this.checkForPauseSignal().catch(err => {
+        logger.error('Pause signal check failed', err);
+      });
+    }, intervalMs);
+
+    logger.debug(`Pause check loop started (interval: ${intervalMs}ms)`);
+  }
+
   async shutdown(): Promise<void> {
     if (this.isShuttingDown) return;
     this.isShuttingDown = true;
@@ -2904,6 +2981,10 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
     if (this.logMaintenanceInterval) {
       clearInterval(this.logMaintenanceInterval);
       this.logMaintenanceInterval = null;
+    }
+    if (this.pauseCheckInterval) {
+      clearInterval(this.pauseCheckInterval);
+      this.pauseCheckInterval = null;
     }
 
     this.rateLimitDetector.stop();

@@ -33,6 +33,7 @@ program
   .command('pause')
   .description('Gracefully pause the orchestrator')
   .option('-c, --config <path>', 'Path to config directory')
+  .option('-t, --timeout <seconds>', 'Timeout in seconds to wait for acknowledgment', '120')
   .action(pauseCommand);
 
 // Resume command
