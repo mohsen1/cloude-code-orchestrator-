@@ -4,11 +4,11 @@ This document outlines the steps to transform the Claude Code Orchestrator into 
 
 ## 1. CLI Entry Point & Global Installation ✅
 - **Executable**: `cco` (Claude Code Orchestrator).
-- **Global Install**: `"bin": { "cco": "dist/index.js" }` in package.json.
-- **Permissions**: Hashbang `#!/usr/bin/env node` in `src/index.ts`.
+- **Global Install**: `"bin": { "cco": "dist/cli/index.js" }` in package.json.
+- **Permissions**: Hashbang `#!/usr/bin/env node` in `src/cli/index.ts`.
 - **Dependencies**: `inquirer`, `commander`, and `chalk` installed.
 
-## 2. Interactive Mode (Default `cco` command)
+## 2. Interactive Mode (Default `cco` command) ✅
 - If `cco` is run without arguments, trigger an interactive prompt.
 - **Questions** (minimal, sufficient):
     - Repository URL
@@ -31,7 +31,7 @@ This document outlines the steps to transform the Claude Code Orchestrator into 
 - **State Location**: State files (`state.json`, queue states) live next to `orchestrator.json`.
 - **One Config = One Session**: Each `orchestrator.json` runs exactly one orchestration session.
 
-## 4. `cco view` (The tmux "Cockpit")
+## 4. `cco view` (The tmux "Cockpit") ✅
 - A new command to visualize the entire swarm.
 - **Logic**:
     1. Detect all active tmux sessions matching `<reponame>-director`, `<reponame>-worker-*`, etc.
@@ -40,7 +40,7 @@ This document outlines the steps to transform the Claude Code Orchestrator into 
     4. Tile panes using `tmux split-window` to show Director, EMs, and Workers simultaneously.
     5. Provide labels for each pane via pane titles.
 
-## 5. Session Naming (Multi-Orchestration Support)
+## 5. Session Naming (Multi-Orchestration Support) ✅
 - **Prefix**: Use git repo name extracted from `repositoryUrl`.
 - **Format**: `<reponame>-director`, `<reponame>-em-1`, `<reponame>-worker-1`, etc.
 - **Example**: For `https://github.com/org/my-app.git`:
@@ -48,7 +48,7 @@ This document outlines the steps to transform the Claude Code Orchestrator into 
     - `my-app-em-1`
     - `my-app-worker-1`
 
-## 6. `cco pause` & `cco resume`
+## 6. `cco pause` & `cco resume` ⏳ (basic implementation done, full state serialization pending)
 - **`cco pause`**:
     - Signals managers and directors that we are wrapping up.
     - Stops automatic pokes, reconcile loops, and queue processing.
@@ -61,10 +61,10 @@ This document outlines the steps to transform the Claude Code Orchestrator into 
 
 ## 7. Implementation Stages
 1. ✅ **Infrastructure**: `package.json` bin, hashbang, dependencies.
-2. **CLI Commands**: Implement `cco`, `cco view`, `cco pause`, `cco resume` using commander.
-3. **Interactive Logic**: Build the inquirer flow and temp dir generator.
-4. **Session Naming**: Update TmuxManager and instance creation to use repo-prefixed names.
-5. **Workspace Refactor**: Replace hardcoded `/tmp/orchestrator-workspace` everywhere.
-6. **Pause/Resume System**: Implement state serialization and scheduler control.
-7. **View Magic**: Build the tmux layout generator.
+2. ✅ **CLI Commands**: Implement `cco`, `cco view`, `cco pause`, `cco resume` using commander.
+3. ✅ **Interactive Logic**: Build the inquirer flow and temp dir generator.
+4. ✅ **Session Naming**: Update TmuxManager and instance creation to use repo-prefixed names.
+5. ⏳ **Workspace Refactor**: Replace hardcoded `/tmp/orchestrator-workspace` everywhere.
+6. ⏳ **Pause/Resume System**: Implement state serialization and scheduler control.
+7. ✅ **View Magic**: Build the tmux layout generator.
 8. **Cleanup**: Remove `--resume` flag, update help text, polish output.
