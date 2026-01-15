@@ -250,9 +250,14 @@ async function createTestBranch(): Promise<string> {
     await mkdir(join(tmpDir, 'src'), { recursive: true });
     await writeFile(join(tmpDir, 'src', '.gitkeep'), '');
 
-    // Commit and push
+    // Commit and push (skip commit if repo already matches expected seed state)
     await runCommand('git', ['add', '.'], { cwd: tmpDir });
-    await runCommand('git', ['commit', '-m', 'Setup calculator project for e2e test'], { cwd: tmpDir });
+    const status = await runCommand('git', ['status', '--porcelain'], { cwd: tmpDir, reject: false });
+    if (status.stdout.trim().length > 0) {
+      await runCommand('git', ['commit', '-m', 'Setup calculator project for e2e test'], { cwd: tmpDir });
+    } else {
+      log('Seed repo already up to date; skipping commit');
+    }
     await runCommand('git', ['push', '-u', 'origin', branchName], { cwd: tmpDir });
 
     log(`Branch ${branchName} created and pushed`);
