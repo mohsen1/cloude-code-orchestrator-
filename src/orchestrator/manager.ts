@@ -284,8 +284,16 @@ export class Orchestrator {
 
   // Track when each worker was last prompted to prevent over-prompting
   private workerLastPromptTime: Map<number, number> = new Map();
+  private workerLastInitAttempt: Map<number, number> = new Map();
+  private instanceLastPendingInputAttempt: Map<string, number> = new Map();
+  private conflictLastPromptTime: Map<string, number> = new Map();
+  private emPendingEscalation: Set<number> = new Set();
   private static readonly WORKER_PROMPT_COOLDOWN_MS = 300000; // 5 minutes between re-prompts
   private static readonly WORKER_IDLE_THRESHOLD_MS = 300000; // 5 minutes idle before re-prompting
+  private static readonly WORKER_READY_REINIT_COOLDOWN_MS = 120000; // 2 minutes between re-init attempts
+  private static readonly PENDING_INPUT_COOLDOWN_MS = 30000; // 30 seconds between Enter retries
+  private static readonly CONFLICT_PROMPT_COOLDOWN_MS = 600000; // 10 minutes between conflict prompts
+  private static readonly CONFLICT_RETRY_DELAY_MS = 300000; // 5 minutes before retrying merges on conflicts
   private teams: EngineeringTeam[] = [];
   private workerToTeam: Map<number, number> = new Map();
   private nextTeamId = 1;
@@ -900,6 +908,95 @@ Pre-merge safety (must be clean):
     `.trim();
   }
 
+  private getConflictContext(instance: ClaudeInstance): { workDir: string; label: string; branchName: string } | null {
+    if (instance.type === 'director') {
+      return { workDir: this.workspaceDir, label: 'Director workspace', branchName: this.config.branch };
+    }
+
+    if (instance.type === 'manager') {
+      return { workDir: this.workspaceDir, label: 'Manager workspace', branchName: this.config.branch };
+    }
+
+    if (instance.type === 'em') {
+      const team = this.getTeam(instance.workerId);
+      if (!team) {
+        return null;
+      }
+      return { workDir: team.worktreePath, label: `EM-${team.id} worktree`, branchName: team.branchName };
+    }
+
+    return null;
+  }
+
+  private async maybePromptConflictResolution(
+    instance: ClaudeInstance | undefined,
+    workDir: string,
+    label: string,
+    branchName: string,
+    options: { assumeReady?: boolean } = {}
+  ): Promise<boolean> {
+    const conflicts = await this.getWorktreeConflicts(workDir);
+    if (conflicts.length === 0) {
+      return false;
+    }
+
+    if (!instance) {
+      logger.warn('Conflicts detected but instance missing', { label, workDir, conflictCount: conflicts.length });
+      return true;
+    }
+
+    const now = Date.now();
+    const lastPrompt = this.conflictLastPromptTime.get(instance.id) ?? 0;
+    if (now - lastPrompt < Orchestrator.CONFLICT_PROMPT_COOLDOWN_MS) {
+      logger.info(`Conflict prompt cooldown active for ${instance.id}`, {
+        label,
+        conflictCount: conflicts.length,
+      });
+      return true;
+    }
+
+    if (!options.assumeReady) {
+      const ready = await this.canPromptInstance(instance);
+      if (!ready) {
+        logger.info(`Conflicts detected for ${label} but ${instance.id} not ready`, {
+          conflictCount: conflicts.length,
+        });
+        return true;
+      }
+    }
+
+    const preview = conflicts.slice(0, 8).map(file => `- ${file}`).join('\n');
+    const suffix = conflicts.length > 8 ? `\n- (and ${conflicts.length - 8} more)` : '';
+    const prompt = `
+## Merge Conflicts Detected
+
+You have unresolved merge conflicts in ${label} (branch: ${branchName}).
+
+Conflicting files:
+${preview}${suffix}
+
+Resolve them before doing any new merges:
+
+1. git status --short
+2. git diff --name-only --diff-filter=U
+3. Resolve conflicts, then:
+   git add <resolved-files>
+   git commit -m "Resolve conflicts in ${branchName}"
+
+4. Push the cleaned branch:
+   git push origin ${branchName}
+
+If the merge should be abandoned instead:
+   git merge --abort
+
+When resolved, STOP.
+    `.trim();
+
+    await this.instanceManager.sendPrompt(instance.id, prompt, workDir);
+    this.conflictLastPromptTime.set(instance.id, now);
+    return true;
+  }
+
   private initializeTeams(): void {
     const workerIds = Array.from({ length: this.config.workerCount }, (_, idx) => idx + 1);
     const maxTeamSize = this.config.engineerManagerGroupSize;
@@ -1498,11 +1595,16 @@ Start now: pull ${this.config.branch}, read PROJECT_DIRECTION.md, draft EM_${tea
      `.trim();
 
      await this.instanceManager.sendPrompt(`worker-${workerId}`, prompt);
+     this.workerLastInitAttempt.set(workerId, Date.now());
      logger.info(`Worker ${workerId} initialized`);
     }
 
   private handleTaskComplete(workerId: number, instanceType: 'director' | 'em' | 'worker' | 'manager'): void {
     if (this.isShuttingDown) return;
+
+    if (instanceType === 'em') {
+      this.emPendingEscalation.delete(workerId);
+    }
 
     if (!this.useHierarchy) {
       if (instanceType === 'worker') {
@@ -1599,6 +1701,19 @@ Start now: pull ${this.config.branch}, read PROJECT_DIRECTION.md, draft EM_${tea
       return;
     }
 
+    const hasConflicts = await this.maybePromptConflictResolution(
+      emInstance,
+      team.worktreePath,
+      `EM-${teamId} worktree`,
+      team.branchName,
+      { assumeReady: true }
+    );
+    if (hasConflicts) {
+      logger.info(`EM-${teamId} has conflicts; delaying worker-${workerId} merge prompt`);
+      this.scheduleTeamMergeRetry(teamId, workerId, Orchestrator.CONFLICT_RETRY_DELAY_MS);
+      return;
+    }
+
     const preMerge = await this.buildPreMergePrompt(team.worktreePath);
     const prompt = `
 You are **Engineering Manager ${teamId} (EM-${teamId})**.
@@ -1621,6 +1736,7 @@ Worker ${workerId} finished a task. Merge their branch into ${team.branchName}:
     `.trim();
 
     await this.instanceManager.sendPrompt(team.emInstanceId, prompt);
+    this.emPendingEscalation.add(teamId);
     team.priorityScore = Date.now();
   }
 
@@ -1639,6 +1755,19 @@ Worker ${workerId} finished a task. Merge their branch into ${team.branchName}:
     if (!ready) {
       logger.info('Director busy - deferring escalation', { teamId });
       this.scheduleDirectorMergeRetry(teamId);
+      return;
+    }
+
+    const hasConflicts = await this.maybePromptConflictResolution(
+      director,
+      this.workspaceDir,
+      'Director workspace',
+      this.config.branch,
+      { assumeReady: true }
+    );
+    if (hasConflicts) {
+      logger.info(`Director workspace has conflicts; delaying team-${teamId} escalation`);
+      this.scheduleDirectorMergeRetry(teamId, Orchestrator.CONFLICT_RETRY_DELAY_MS);
       return;
     }
 
@@ -1706,6 +1835,19 @@ ${preMerge}
       }
       this.directorMergeQueue.enqueue(teamId);
       this.processDirectorMergeQueue();
+    }, delayMs);
+  }
+
+  private scheduleManagerMergeRetry(workerId: number, delayMs = 5000): void {
+    if (this.useHierarchy || !this.managerMergeQueue) {
+      return;
+    }
+    setTimeout(() => {
+      if (this.isShuttingDown || !this.managerMergeQueue) {
+        return;
+      }
+      this.managerMergeQueue.enqueue(workerId);
+      this.processManagerMergeQueue();
     }, delayMs);
   }
 
@@ -1835,6 +1977,27 @@ Start now: Sync and read your task list.
 
   private async notifyManagerOfCompletion(workerId: number): Promise<void> {
     if (this.useHierarchy || !this.managerMergeQueue) {
+      return;
+    }
+
+    const manager = this.instanceManager.getInstance('manager');
+    const ready = await this.canPromptInstance(manager);
+    if (!ready) {
+      logger.info(`Manager busy - deferring worker-${workerId} merge prompt`);
+      this.scheduleManagerMergeRetry(workerId);
+      return;
+    }
+
+    const hasConflicts = await this.maybePromptConflictResolution(
+      manager,
+      this.workspaceDir,
+      'Manager workspace',
+      this.config.branch,
+      { assumeReady: true }
+    );
+    if (hasConflicts) {
+      logger.info(`Manager workspace has conflicts; delaying worker-${workerId} merge prompt`);
+      this.scheduleManagerMergeRetry(workerId, Orchestrator.CONFLICT_RETRY_DELAY_MS);
       return;
     }
 
@@ -2342,6 +2505,17 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
 
           if (instance.type === 'worker') {
             this.handleTaskComplete(instance.workerId, 'worker');
+          } else if (instance.type === 'em') {
+            const teamId = instance.workerId;
+            if (this.emPendingEscalation.has(teamId)) {
+              this.emPendingEscalation.delete(teamId);
+              this.handleTaskComplete(teamId, 'em');
+            }
+            this.processTeamMergeQueue(teamId);
+          } else if (instance.type === 'director') {
+            this.processDirectorMergeQueue();
+          } else if (instance.type === 'manager') {
+            this.processManagerMergeQueue();
           }
         }
       }
@@ -2388,8 +2562,12 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
         const timeSinceCreation = Date.now() - instance.createdAt.getTime();
         // If worker has been in 'ready' state for over 30 seconds at prompt, nudge them
         if (timeSinceCreation > 30000) {
-          logger.info(`Worker ${instance.workerId} stuck in ready state, initializing`);
-          await this.initializeWorker(instance.workerId);
+          const lastInitAttempt = this.workerLastInitAttempt.get(instance.workerId) ?? 0;
+          if (Date.now() - lastInitAttempt > Orchestrator.WORKER_READY_REINIT_COOLDOWN_MS) {
+            logger.info(`Worker ${instance.workerId} stuck in ready state, initializing`);
+            this.workerLastInitAttempt.set(instance.workerId, Date.now());
+            await this.initializeWorker(instance.workerId);
+          }
         }
       }
     }
@@ -2409,10 +2587,30 @@ You only coordinate Engineering Managers. NEVER touch worker task lists directly
     // Check for pending input in prompt buffer (text typed but not submitted)
     const hasPendingInput = await this.tmux.hasPendingInput(sessionName);
     if (hasPendingInput) {
-      logger.info(`Instance ${instance.id} has pending input in prompt buffer, sending Enter`);
-      await this.tmux.sendEnter(sessionName);
-      instance.lastToolUse = new Date(); // Reset timer
+      const now = Date.now();
+      const lastAttempt = this.instanceLastPendingInputAttempt.get(instance.id) ?? 0;
+      if (now - lastAttempt > Orchestrator.PENDING_INPUT_COOLDOWN_MS) {
+        logger.info(`Instance ${instance.id} has pending input in prompt buffer, sending Enter`);
+        this.instanceLastPendingInputAttempt.set(instance.id, now);
+        await this.tmux.sendEnter(sessionName);
+        instance.lastToolUse = new Date(); // Reset timer
+      }
       return;
+    }
+
+    if (instance.status === 'idle') {
+      const context = this.getConflictContext(instance);
+      if (context) {
+        const handled = await this.maybePromptConflictResolution(
+          instance,
+          context.workDir,
+          context.label,
+          context.branchName
+        );
+        if (handled) {
+          return;
+        }
+      }
     }
   }
 
