@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { readFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -85,12 +86,12 @@ async function main(): Promise<void> {
   const authConfigs = await loadAuthConfigs(values.config);
 
   if (config.authMode === 'api-keys-only' && authConfigs.length === 0) {
-    logger.error('authMode "api-keys-only" is set but no auth-configs.json was found or it is empty');
+    logger.error('authMode "api-keys-only" is set but no api-keys.json was found or it is empty');
     process.exit(1);
   }
 
   if (config.authMode === 'api-keys-first' && authConfigs.length === 0) {
-    logger.warn('authMode "api-keys-first" requested but no auth-configs.json found; falling back to OAuth');
+    logger.warn('authMode "api-keys-first" requested but no api-keys.json found; falling back to OAuth');
   }
 
   if (authConfigs.length > 0) {
@@ -135,29 +136,29 @@ async function main(): Promise<void> {
 }
 
 /**
- * Load auth configs from auth-configs.json in config directory.
+ * Load auth configs from api-keys.json in config directory.
  * Supports API keys, z.ai configs, and other auth methods.
  * Returns empty array if file doesn't exist (OAuth will be used).
  *
- * Example auth-configs.json:
+ * Example api-keys.json:
  * [
  *   { "name": "api-key-1", "env": { "ANTHROPIC_API_KEY": "sk-ant-..." } },
  *   { "name": "z.ai", "env": { "ANTHROPIC_AUTH_TOKEN": "...", "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic" } }
  * ]
  */
 async function loadAuthConfigs(configDir: string): Promise<AuthConfig[]> {
-  // Try both file names for backwards compatibility
-  const authConfigsPath = join(configDir, 'auth-configs.json');
-  const legacyPath = join(configDir, 'api-keys.json');
+  // Use api-keys.json
+  const configPath = join(configDir, 'api-keys.json');
+  const legacyPath = join(configDir, 'auth-configs.json');
 
-  const configPath = existsSync(authConfigsPath) ? authConfigsPath : legacyPath;
+  const finalPath = existsSync(configPath) ? configPath : legacyPath;
 
-  if (!existsSync(configPath)) {
+  if (!existsSync(finalPath)) {
     return [];
   }
 
   try {
-    const content = await readFile(configPath, 'utf-8');
+    const content = await readFile(finalPath, 'utf-8');
     const data = JSON.parse(content);
 
     const configs: AuthConfig[] = [];
@@ -274,15 +275,15 @@ Options:
 Authentication:
   By default, Claude uses your local OAuth credentials (~/.claude).
   To control auth startup/rotation, set authMode in orchestrator.json:
-    - oauth (default): start with OAuth, then rotate into auth-configs.json
-    - api-keys-first: start with first entry in auth-configs.json, then OAuth
-    - api-keys-only: use only auth-configs.json (required)
-  Provide auth-configs.json (or legacy api-keys.json) to supply API keys.
+    - oauth (default): start with OAuth, then rotate into api-keys.json
+    - api-keys-first: start with first entry in api-keys.json, then OAuth
+    - api-keys-only: use only api-keys.json (required)
+  Provide api-keys.json to supply API keys.
 
 Config Directory Structure:
   <config-dir>/
   ├── orchestrator.json    Main orchestrator settings (required)
-  └── auth-configs.json    Auth configurations for rotation (optional)
+  └── api-keys.json        Auth configurations for rotation (optional)
 
 Example orchestrator.json:
   {
@@ -291,7 +292,7 @@ Example orchestrator.json:
     "workerCount": 3
   }
 
-Example auth-configs.json (optional):
+Example api-keys.json (optional):
   [
     {
       "name": "api-key-1",

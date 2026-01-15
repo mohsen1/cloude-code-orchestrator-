@@ -33,7 +33,7 @@
  *   npm run test:e2e -- --model sonnet
  *
  *   # Use custom auth config
- *   npm run test:e2e -- --auth-config ~/my-auth-configs.json
+ *   npm run test:e2e -- --auth-config ~/my-api-keys.json
  *
  * ## Options
  *
@@ -41,14 +41,14 @@
  *   -d, --duration <minutes>  Test duration in minutes (default: 5)
  *   -w, --workers <count>     Number of workers (default: 2)
  *   -m, --model <model>       Claude model: haiku, sonnet, opus (default: haiku)
- *   -a, --auth-config <path>  Path to auth-configs.json for API key auth
+ *   -a, --auth-config <path>  Path to api-keys.json for API key auth
  *   --no-cleanup              Don't clean up tmux sessions after test
  *
  * ## Requirements
  *
  *   - Git configured with SSH push access to the test repo
  *   - Claude Code CLI installed (`claude` command available)
- *   - Valid authentication (OAuth via ~/.claude or API keys via auth-configs.json)
+ *   - Valid authentication (OAuth via ~/.claude or API keys via api-keys.json)
  *   - tmux installed (for running Claude instances)
  *
  * ## Success Criteria
@@ -93,7 +93,7 @@ const { values } = parseArgs({
     'auth-config': {
       type: 'string',
       short: 'a',
-      description: 'Path to auth-configs.json',
+      description: 'Path to api-keys.json',
     },
     model: {
       type: 'string',
@@ -290,7 +290,7 @@ async function createTestConfig(branchName: string): Promise<string> {
   // Copy auth config if provided
   if (AUTH_CONFIG_PATH && existsSync(AUTH_CONFIG_PATH)) {
     const authContent = await readFile(AUTH_CONFIG_PATH, 'utf-8');
-    await writeFile(join(configDir, 'auth-configs.json'), authContent);
+    await writeFile(join(configDir, 'api-keys.json'), authContent);
     log('Auth config copied');
   }
 

@@ -81,6 +81,7 @@ interface OrchestratorTiming {
   managerWorkerInitDelayMs: number;
   gitShortTimeoutMs: number;
   gitLongTimeoutMs: number;
+  worktreeTimeoutMs: number;
 }
 
 const ENV_FILES = ['.env', '.env.local'];
@@ -445,6 +446,8 @@ export class Orchestrator {
       managerWorkerInitDelayMs: scale(1 / 6),
       gitShortTimeoutMs: scale(1 / 3),
       gitLongTimeoutMs: scale(2 / 3),
+      // Worktree operations can take very long for large repos (e.g., 76k files)
+      worktreeTimeoutMs: 5 * 60 * 1000, // 5 minutes
     };
   }
 
@@ -599,9 +602,15 @@ export class Orchestrator {
       }
 
       const currentBranch = String(result.stdout ?? '').trim();
-      if (currentBranch !== this.config.branch) {
-        logger.debug(`Wrong branch: ${currentBranch} (expected ${this.config.branch})`);
+      if (currentBranch !== this.config.branch && !currentBranch.startsWith(`${this.config.branch}-run-`)) {
+        logger.debug(`Wrong branch: ${currentBranch} (expected ${this.config.branch} or a run branch)`);
         return false;
+      }
+
+      // If we're on a run branch, update the config so we continue using it
+      if (currentBranch.startsWith(`${this.config.branch}-run-`)) {
+        logger.info(`Detected run branch: ${currentBranch}. Updating config branch.`);
+        this.config.branch = currentBranch;
       }
 
       // Check if worktrees directory exists
@@ -750,6 +759,35 @@ Continue working autonomously. NEVER ask questions.
   }
 
   private async cleanWorkspace(): Promise<void> {
+    // First, try to properly remove any git worktrees if this is an existing git repo
+    if (existsSync(join(this.workspaceDir, '.git'))) {
+      try {
+        // Prune any stale worktree entries
+        await runGit(this.workspaceDir, ['worktree', 'prune'], { allowFailure: true });
+        
+        // List and remove all worktrees
+        const result = await runGit(this.workspaceDir, ['worktree', 'list', '--porcelain'], { allowFailure: true });
+        if (result.exitCode === 0 && result.stdout) {
+          const worktreePaths = String(result.stdout)
+            .split('\n')
+            .filter(line => line.startsWith('worktree '))
+            .map(line => line.replace('worktree ', '').trim())
+            .filter(path => path !== this.workspaceDir); // Don't remove main worktree
+          
+          for (const wtPath of worktreePaths) {
+            try {
+              await runGit(this.workspaceDir, ['worktree', 'remove', '--force', wtPath], { allowFailure: true });
+              logger.debug(`Removed worktree: ${wtPath}`);
+            } catch {
+              // Ignore errors, we'll force remove the directory anyway
+            }
+          }
+        }
+      } catch (err) {
+        logger.debug('Error cleaning up worktrees', err);
+      }
+    }
+    
     try {
       await rm(this.workspaceDir, { recursive: true, force: true });
     } catch {
@@ -770,33 +808,59 @@ Continue working autonomously. NEVER ask questions.
 
     this.git = new GitManager(this.workspaceDir);
 
+    // Create a new run branch if requested
+    if (this.config.useRunBranch) {
+      const runBranch = `${this.config.branch}-run-${Date.now()}`;
+      logger.info(`Creating run branch: ${runBranch} from ${this.config.branch}`);
+      try {
+        await runGit(this.workspaceDir, ['checkout', '-b', runBranch]);
+        this.config.branch = runBranch;
+      } catch (err) {
+        logger.error(`Failed to create run branch ${runBranch}`, err);
+        throw err;
+      }
+    }
+
     // Copy env files to main workspace (for manager)
     await this.copyConfigEnvFiles(this.workspaceDir);
 
-    // Create worktrees for workers in parallel
+    // Create worktrees for workers sequentially to avoid race conditions
     const worktreesDir = `${this.workspaceDir}/worktrees`;
     await mkdir(worktreesDir, { recursive: true });
+    
+    // Prune stale worktrees once before creating new ones
+    await runGit(this.workspaceDir, ['worktree', 'prune'], { allowFailure: true });
 
-    const createWorktree = async (i: number) => {
+    for (let i = 1; i <= this.config.workerCount; i++) {
       const branchName = `worker-${i}`;
       const worktreePath = `${worktreesDir}/worker-${i}`;
+
+      // Always clean up the worktree path before attempting to create
+      // This handles: stale entries, partial creates from failed attempts, leftover directories
+      try {
+        await runGit(this.workspaceDir, ['worktree', 'remove', '--force', worktreePath], { allowFailure: true });
+      } catch {
+        // Ignore - worktree might not exist in git's records
+      }
+      // Always remove the directory if it exists (handles partial creates)
+      await rm(worktreePath, { recursive: true, force: true });
+      // Prune to clean up any orphaned worktree metadata
+      await runGit(this.workspaceDir, ['worktree', 'prune'], { allowFailure: true });
 
       try {
         await runGit(this.workspaceDir, ['branch', branchName], { allowFailure: true });
       } catch (err) {
         logger.warn(`Failed to create branch ${branchName}`, err);
       }
-        await runGit(this.workspaceDir, ['worktree', 'add', worktreePath, branchName], {
-          timeoutMs: this.timing.gitLongTimeoutMs,
-        });
+      
+      await runGit(this.workspaceDir, ['worktree', 'add', worktreePath, branchName], {
+        timeoutMs: this.timing.worktreeTimeoutMs,
+        retryOnLock: false, // Don't retry - we've already cleaned up
+      });
       await this.copyEnvFiles(this.workspaceDir, worktreePath);
 
       logger.info(`Created worktree for worker-${i}`, { path: worktreePath });
-    };
-
-    await Promise.all(
-      Array.from({ length: this.config.workerCount }, (_, i) => createWorktree(i + 1))
-    );
+    }
 
     await this.setupEngineeringManagerWorktrees();
   }
@@ -1167,13 +1231,16 @@ When resolved, STOP.
         // If EM branch doesn't exist on origin, leave worktree as-is to preserve local work
         await this.copyEnvFiles(this.workspaceDir, team.worktreePath);
       } else {
+        // Clean up any stale worktree metadata before creating
+        await runGit(this.workspaceDir, ['worktree', 'prune'], { allowFailure: true });
+        
         try {
           await runGit(this.workspaceDir, ['branch', team.branchName], { allowFailure: true });
         } catch (err) {
           logger.warn(`Failed to create branch ${team.branchName}`, err);
         }
         await runGit(this.workspaceDir, ['worktree', 'add', team.worktreePath, team.branchName], {
-          timeoutMs: this.timing.gitLongTimeoutMs,
+          timeoutMs: this.timing.worktreeTimeoutMs,
         });
         await this.copyEnvFiles(this.workspaceDir, team.worktreePath);
       }
@@ -1427,7 +1494,7 @@ Please resume. Check git status and recent changes.
 
   private validateAuthMode(): void {
     if (this.config.authMode === 'api-keys-only' && this.authConfigs.length === 0) {
-      throw new Error('authMode "api-keys-only" requires at least one auth config in auth-configs.json');
+      throw new Error('authMode "api-keys-only" requires at least one auth config in api-keys.json');
     }
   }
 

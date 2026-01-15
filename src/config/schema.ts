@@ -9,8 +9,10 @@ export const OrchestratorConfigSchema = z
     repositoryUrl: z.string().regex(gitUrlPattern, { message: 'Repository URL must be a valid git URL (HTTPS or SSH)' }),
     branch: z.string().default('main'),
     logDirectory: z.string().min(1).optional(),
+    workspaceDir: z.string().min(1).optional(), // Path to the workspace directory
     model: z.string().optional(), // Claude model: 'haiku', 'sonnet', 'opus', or full model name
     authMode: z.enum(['oauth', 'api-keys-first', 'api-keys-only']).default('oauth'),
+    useRunBranch: z.boolean().default(false), // If true, creates a unique branch for each run based on the target branch
     engineerManagerGroupSize: z.number().int().min(1).max(8).default(4),
     cloneDepth: z.number().int().min(1).optional(), // shallow clone depth
     envFiles: z.array(z.string()).optional(), // Paths to env files to copy to each worker worktree (e.g., ["/path/to/.env.local"])

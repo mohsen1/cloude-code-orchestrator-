@@ -29,7 +29,7 @@ npm run test:e2e -- --workers 3
 1. **Claude Code CLI** - Must be installed and accessible as `claude`
 2. **Authentication** - Either:
    - OAuth configured in `~/.claude` (default)
-   - API keys in `auth-configs.json`
+   - API keys in `api-keys.json`
 3. **tmux** - Required for running Claude instances
 4. **Git SSH access** - Push access to the test repository
 
@@ -41,7 +41,7 @@ npm run test:e2e -- --workers 3
 | `--duration` | `-d` | `5` | Test duration in minutes |
 | `--workers` | `-w` | `2` | Number of worker instances |
 | `--model` | `-m` | `haiku` | Claude model (haiku/sonnet/opus) |
-| `--auth-config` | `-a` | - | Path to auth-configs.json |
+| `--auth-config` | `-a` | - | Path to api-keys.json |
 | `--no-cleanup` | - | `false` | Keep tmux sessions after test |
 
 ## Test Project
