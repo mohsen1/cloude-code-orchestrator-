@@ -25,7 +25,7 @@ describe('MergeQueue', () => {
       processed.push(id);
     };
 
-    const queue = new MergeQueue(processFunc);
+    const queue = new MergeQueue(processFunc, { minProcessIntervalMs: 0 });
     queue.enqueue(1);
     queue.enqueue(2);
     queue.enqueue(3);
@@ -45,7 +45,7 @@ describe('MergeQueue', () => {
   });
 
   it('should not duplicate items in queue', () => {
-    const queue = new MergeQueue(async () => {});
+    const queue = new MergeQueue(async () => {}, { minProcessIntervalMs: 0 });
     queue.enqueue(1);
     queue.enqueue(1);
     queue.enqueue(2);
@@ -54,7 +54,7 @@ describe('MergeQueue', () => {
   });
 
   it('should persist state to disk', async () => {
-    const queue = new MergeQueue(async () => {}, TEST_STATE_PATH);
+    const queue = new MergeQueue(async () => {}, { statePath: TEST_STATE_PATH, minProcessIntervalMs: 0 });
     queue.enqueue(5);
     
     // Wait for async save
@@ -74,7 +74,7 @@ describe('MergeQueue', () => {
     };
     await writeFile(TEST_STATE_PATH, JSON.stringify(initialState));
 
-    const queue = new MergeQueue(async () => {}, TEST_STATE_PATH);
+    const queue = new MergeQueue(async () => {}, { statePath: TEST_STATE_PATH, minProcessIntervalMs: 0 });
     await queue.loadState();
 
     expect(queue.size()).toBe(1);
@@ -94,7 +94,10 @@ describe('MergeQueue', () => {
     };
 
     const onMaxExceeded = vi.fn();
-    const queue = new MergeQueue(processFunc, undefined, onMaxExceeded);
+    const queue = new MergeQueue(processFunc, { 
+      onMaxAttemptsExceeded: onMaxExceeded, 
+      minProcessIntervalMs: 0 
+    });
     
     queue.enqueue(1);
     

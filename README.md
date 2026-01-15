@@ -60,7 +60,7 @@ Create a config directory with the following files:
 | `managerHeartbeatIntervalMs` | number | `timingBaseMs * 4` | Director heartbeat interval in milliseconds (min: 60000) |
 | `maxToolUsesPerInstance` | number | `500` | Maximum tool invocations per instance before stopping (min: 100) |
 | `maxTotalToolUses` | number | `2000` | Maximum total tool invocations across all instances (min: 500) |
-| `maxRunDurationMinutes` | number | `120` | Maximum orchestrator run time in minutes (min: 10) |
+| `maxRunDurationMinutes` | number | `120` | Maximum orchestrator run time in minutes (min: 1) |
 
 ### Run Logs
 
@@ -73,7 +73,7 @@ These files grow for the lifetime of the run so you can audit every command Clau
 
 ### Director/Engineering Manager hierarchy
 
-Set `engineerManagerGroupSize` to control how many workers each EM may supervise. When `workerCount` is greater than this cap, the Director automatically creates enough EM teams to cover `workerCount`, resizes rosters after every escalation, and can kill or respawn teams when they underperform. When `workerCount` is less than or equal to the cap, the orchestrator remains in the simpler Manager/Worker mode. Each EM-enabled team owns an EM-specific branch (e.g., `team-1-main`) plus worker branches (`worker-1`, `worker-2`, ...). Keep `TEAM_STRUCTURE.md`, `EM_<id>_TASKS.md`, and `WORKER_<id>_TASK_LIST.md` in your repo so Claude can coordinate work between layers.
+Set `engineerManagerGroupSize` to control how many workers each EM may supervise. When `workerCount` is greater than this cap, the Director automatically creates enough EM teams to cover `workerCount`, resizes rosters after every escalation, and can kill or respawn teams when they underperform. When `workerCount` is less than or equal to the cap, the orchestrator remains in the simpler Manager/Worker mode. Each EM-enabled team owns an EM-specific branch (e.g., `em-team-1`) plus worker branches (`worker-1`, `worker-2`, ...). Keep `TEAM_STRUCTURE.md`, `EM_<id>_TASKS.md`, and `WORKER_<id>_TASK_LIST.md` in your repo so Claude can coordinate work between layers.
 
 ### auth-configs.json (optional, for rate limit rotation)
 
@@ -129,10 +129,10 @@ Orchestrator (Node.js)
     +-- Director Instance (tmux + claude)
     |       +-- Sets strategy, merges EM branches, resizes teams
     |
-    +-- Engineering Manager 1 (worktree: team-1)
+    +-- Engineering Manager 1 (worktree: em-1)
     |       +-- Manages workers 1-4, maintains EM_1_TASKS.md, merges worker branches
     |
-    +-- Engineering Manager 2 (worktree: team-2)
+    +-- Engineering Manager 2 (worktree: em-2)
         +-- Manages workers 5-8 (etc.)
 
   Workers (tmux + claude, worktrees worker-N)
@@ -178,6 +178,7 @@ Use `envFiles` in your orchestrator.json to copy secrets from outside the reposi
 
 This copies the specified files to:
 - Main workspace (for Manager)
+- Each Engineering Manager worktree (em-1, em-2, etc.)
 - Each worker worktree (worker-1, worker-2, etc.)
 
 Files are copied (not symlinked) to maintain isolation between worktrees.

@@ -30,10 +30,10 @@ export class StuckDetector {
   constructor(
     private instanceManager: ClaudeInstanceManager,
     private onStuck: (instanceId: string) => Promise<void>,
-    timing: StuckDetectorTiming,
+    timing: StuckDetectorTiming = { stuckThresholdMs: 300000 },
     private tmux?: TmuxManager
   ) {
-    this.stuckThresholdMs = timing.stuckThresholdMs;
+    this.stuckThresholdMs = timing.stuckThresholdMs ?? 300000;
     this.nudgeThresholdMs = timing.nudgeThresholdMs ?? Math.round(this.stuckThresholdMs * 0.4);
     this.escalationCooldownMs = timing.escalationCooldownMs ?? Math.round(this.stuckThresholdMs * 0.2);
     this.interventionDelayMs = timing.interventionDelayMs ?? Math.max(1, Math.round(this.stuckThresholdMs / 150));

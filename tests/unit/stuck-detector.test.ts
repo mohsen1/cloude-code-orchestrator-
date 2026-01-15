@@ -19,7 +19,7 @@ describe('StuckDetector', () => {
     stuckDetector = new StuckDetector(
       mockInstanceManager as any,
       onStuckCallback,
-      60000 // 1 minute threshold
+      { stuckThresholdMs: 60000 } // 1 minute threshold
     );
   });
 
@@ -139,7 +139,7 @@ describe('StuckDetector', () => {
       const detectorWithTmux = new StuckDetector(
         mockInstanceManager as any,
         onStuckCallback,
-        60000, // 1 minute threshold
+        { stuckThresholdMs: 60000 }, // 1 minute threshold
         mockTmux as any
       );
 
@@ -205,7 +205,7 @@ describe('StuckDetector', () => {
       const detector = new StuckDetector(
         mockInstanceManager as any,
         errorCallback,
-        60000,
+        { stuckThresholdMs: 60000 },
         mockTmux as any
       );
 

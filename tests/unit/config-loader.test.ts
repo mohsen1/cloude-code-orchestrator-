@@ -61,7 +61,7 @@ describe('ConfigLoader', () => {
       expect(config.serverPort).toBe(3000);
       expect(config.hookServerPort).toBe(3000);
       expect(config.healthCheckIntervalMs).toBe(30000);
-      expect(config.stuckThresholdMs).toBe(300000);
+      expect(config.stuckThresholdMs).toBe(180000);
       expect(config.maxToolUsesPerInstance).toBe(500);
       expect(config.maxTotalToolUses).toBe(2000);
       expect(config.maxRunDurationMinutes).toBe(120);
