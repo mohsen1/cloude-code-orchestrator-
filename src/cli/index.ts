@@ -5,6 +5,7 @@ import { startCommand } from './commands/start.js';
 import { viewCommand } from './commands/view.js';
 import { pauseCommand } from './commands/pause.js';
 import { resumeCommand } from './commands/resume.js';
+import { cleanupCommand } from './commands/cleanup.js';
 
 const program = new Command();
 
@@ -42,5 +43,12 @@ program
   .description('Resume a paused orchestrator')
   .option('-c, --config <path>', 'Path to config directory')
   .action(resumeCommand);
+
+// Cleanup command
+program
+  .command('cleanup')
+  .description('Kill orphaned tmux sessions and remove temporary worktrees')
+  .option('-c, --config <path>', 'Path to config directory')
+  .action(cleanupCommand);
 
 program.parse();

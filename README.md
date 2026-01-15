@@ -1,128 +1,121 @@
-# `cco` Claude Code Orchestrator
+# `cco`  Claude Code Orchestrator
 
-A distributed system for orchestrating multiple Claude Code instances to work collaboratively on software projects.
+Orchestrate multiple Claude Code instances to work collaboratively on software projects. This is intended for **very long horizon tasks** that require parallelization and coordination among AI agents. Tasks like building a full-stack application, refactoring a large codebase, or implementing complex features.
 
-## 🚀 Overview
+`cco` is designed to be completely hands-off once started, with automatic management of git branches, worktrees, and Claude instances. The only requirement is to provide high-level project goals in `PROJECT_DIRECTION.md`.
 
-The orchestrator spawns multiple Claude Code instances that work in parallel on a shared codebase using a hierarchical coordination model.
+## Overview
 
-### Hierarchy
-- **Director**: Coordinates Engineering Managers (EMs) and makes strategic merges to the main branch.
-- **Engineering Managers (EMs)**: Command teams of workers, curate team branches, and maintain task lists.
-- **Workers**: Operate in isolated **git worktrees**, complete specific tasks, and push to worker-specific branches.
+Spawns parallel Claude Code instances using a hierarchical coordination model:
 
-## Features
+- **Director** - Coordinates Engineering Managers and merges to main branch
+- **Engineering Managers (EMs)** - Lead teams of workers, curate team branches
+- **Workers** - Execute tasks in isolated git worktrees
 
-- **Hierarchical Coordination**: Scalable Director/EM/Worker event-driven architecture.
-- **Isolation**: Git worktree isolation ensures parallel development without file conflicts.
-- **Reliability**: Automatic rate limit detection, stuck instance detection, and health monitoring.
-- **Auth Rotation**: Seamlessly rotates between OAuth and a pool of API keys.
-- **Visibility**: Detailed per-instance tmux logs, cost tracking, and usage limits.
+## Installation
 
----
+Requirements: Node.js 22+, tmux, git, [Claude Code CLI](https://github.com/anthropics/claude-code)
 
-## Quick Start
-
-### 1. Requirements
-- Node.js 22+
-- `tmux`
-- `git`
-- [Claude Code CLI](https://github.com/anthropics/claude-code) (`npm install -g @anthropic-ai/claude-code`)
-
-### 2. Installation
 ```bash
-npm install
-npm run build
+npm install -g @mohsen/claude-code-orchestrator
 ```
 
-### 3. Basic Run
-```bash
-# Create a config directory with orchestrator.json
-mkdir my-config
-echo '{"repositoryUrl": "https://github.com/org/repo.git", "workerCount": 2}' > my-config/orchestrator.json
+Start an orchestration session using the interactive CLI:
 
-# Start orchestrating
-npm start -- --config ./my-config
+```bash
+cco start
 ```
 
----
+## Usage with Configuration File
 
-## ⚙️ Configuration
+1. Create a configuration directory (e.g., `my-config/`)
+2. Add `orchestrator.json` (see Configuration section)
+3. (Optional) Add `api-keys.json` for API key authentication
+4. Start the orchestrator:
+    ```bash
+    # Start
+    cco start --config ./my-config
+    ```
 
-The orchestrator looks for configuration files in the directory specified by `--config`.
+## Configuration
 
-### `orchestrator.json` (Required)
+### `orchestrator.json`
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `repositoryUrl` | `string` | *required* | URL of the git repository to work on. |
-| `branch` | `string` | `"main"` | Base branch to check out. |
-| `workerCount` | `number` | *required* | Total number of worker instances (1-20). |
-| `useRunBranch` | `boolean` | `false` | If `true`, creates a `run/YYYY-MM-DD-HH-MM` isolation branch for the run. |
-| `authMode` | `string` | `"oauth"` | `oauth`, `api-keys-first`, or `api-keys-only`. |
-| `logDirectory` | `string` | `config path` | Where per-run logs are stored. |
-| `model` | `string` | *none* | Claude model to use (`haiku`, `sonnet`, `opus`). |
-| `engineerManagerGroupSize` | `number` | `4` | Max workers per EM team. Triggers Director mode if exceeded. |
-| `maxRunDurationMinutes` | `number` | `120` | Maximum orchestrator run time. |
+| `repositoryUrl` | string | required | Git repository URL |
+| `branch` | string | `"main"` | Base branch |
+| `workerCount` | number | required | Worker instances (1-20) |
+| `useRunBranch` | boolean | `false` | Create `run/YYYY-MM-DD-HH-MM` isolation branch |
+| `authMode` | string | `"oauth"` | `oauth`, `api-keys-first`, or `api-keys-only` |
+| `logDirectory` | string | config path | Log storage location |
+| `model` | string | - | Claude model (`haiku`, `sonnet`, `opus`) |
+| `engineerManagerGroupSize` | number | `4` | Max workers per EM |
+| `maxRunDurationMinutes` | number | `120` | Max run duration |
 
-### `api-keys.json` (Optional)
+### `api-keys.json` (optional)
 
-Used for rate limit rotation. The orchestrator will rotate through these keys when Claude hits "429 Too Many Requests".
+For rate limit rotation cco offers two authentication modes: OAuth and API keys. By default, it uses OAuth (your regular Claude CLI auth). To use API keys, create an `api-keys.json` file with the following structure:
 
 ```json
 [
-  { "name": "key-1", "env": { "ANTHROPIC_API_KEY": "sk-ant-..." } },
-  { "name": "base-alt", "env": { "ANTHROPIC_AUTH_TOKEN": "...", "ANTHROPIC_BASE_URL": "..." } }
+  { "name": "key-1", "env": { "ANTHROPIC_API_KEY": "sk-ant-..." } }
 ]
 ```
 
----
 
-## 🔐 Authentication Modes
+Note: You can include multiple keys for rotation, and cco will switch keys upon hitting rate limits.
 
-- **`oauth` (Default)**: Starts with your local `claude` CLI auth. Rotates to `api-keys.json` if rate limited.
-- **`api-keys-first`**: Starts with the first key in `api-keys.json`. Falls back to OAuth after seeking through all keys.
-- **`api-keys-only`**: Only uses keys from `api-keys.json`. Exits if no keys are available.
+You can also use other providers such as [Z.ai](https://z.ai) by specifying their required environment variables in the `env` object.
 
----
+## Authentication Modes
 
-## 📁 Repository Structure
+| Mode | Description |
+|------|-------------|
+| `oauth` | Start with CLI auth, rotate to API keys if rate limited |
+| `api-keys-first` | Start with API keys, fall back to OAuth |
+| `api-keys-only` | Only use API keys |
 
-The target repository should contain instructions for the orchestrator:
+## Target Repository Setup
 
-- **`PROJECT_DIRECTION.md`**: High-level goals. The Director/Manager reads this to initialize the project.
-- **`TEAM_STRUCTURE.md`**: (Auto-managed) Tracks which EMs and Workers are assigned to which tasks.
-- **`Environment Files`**: `.env` or `.env.local` in the target repo are automatically copied to all worktrees.
+Add these files to your target repository:
 
----
+- `PROJECT_DIRECTION.md` - High-level goals for the Director/Manager
+- `TEAM_STRUCTURE.md` - Auto-managed task assignments. cco creates and updates this file.
+- `.env` / `.env.local` - Automatically copied to all worktrees
 
-## 📊 Monitoring & Logs
+## Logs
 
-Every launch creates a timestamped folder in your `logDirectory`:
-- `combined.log`: Orchestrator event stream.
-- `session-director.log`: Full terminal output from the Director tmux session.
-- `session-worker-N.log`: Full terminal output from worker sessions.
+Each run creates a timestamped folder with:
 
----
+- `combined.log` - Orchestrator events
+- `session-director.log` - Director tmux output
+- `session-worker-N.log` - Worker tmux outputs
 
-## 🛠 Commands
-
-```bash
-npm start       # Run using built files
-npm run dev     # Run directly with tsx
-npm run build   # Compile source to dist/
-npm test        # Run unit & integration tests
-```
-
----
-
-## 🧹 Maintenance
-
-If the orchestrator crashes or is interrupted, use the cleanup script to kill orphaned tmux sessions and remove temporary worktrees:
+## Pausing and Resuming
+Pause the orchestrator (stops all instances):
 
 ```bash
-./scripts/cleanup.sh
+cco pause --config ./my-config
+``` 
+Resume the orchestrator:
+
+```bash
+cco resume --config ./my-config
 ```
 
-## 📄 License
+## Cleanup
+
+Kill orphaned sessions and remove temporary worktrees:
+
+```bash
+cco cleanup --config ./my-config
+```
+
+## Development
+
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for contributing and development setup.
+
+## License
+
 MIT

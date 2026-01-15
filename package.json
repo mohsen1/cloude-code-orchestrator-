@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-orchestrator",
+  "name": "@mohsen/claude-code-orchestrator",
   "version": "1.0.0",
   "description": "A distributed system for orchestrating multiple Claude Code instances",
   "main": "dist/index.js",
