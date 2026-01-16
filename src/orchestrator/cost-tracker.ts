@@ -1,9 +1,15 @@
-import { ClaudeInstanceManager } from '../claude/instance.js';
+/**
+ * CostTracker - Track API usage and enforce cost limits
+ *
+ * Simplified for V2 architecture - works with TeamManager instead of ClaudeInstanceManager
+ */
+
 import { logger } from '../utils/logger.js';
+import type { TeamManager } from '../v2/team-manager.js';
 
 export interface UsageStats {
   totalToolUses: number;
-  toolUsesPerInstance: Map<string, number>;
+  toolUsesPerWorker: Map<number, number>;
   startTime: Date;
   runDurationMinutes: number;
 }
@@ -26,7 +32,7 @@ export class CostTracker {
   private warned: Set<string> = new Set();
 
   constructor(
-    private instanceManager: ClaudeInstanceManager,
+    private teamManager: TeamManager,
     limits?: Partial<CostLimits>
   ) {
     this.startTime = new Date();
@@ -43,20 +49,20 @@ export class CostTracker {
    * Get current usage statistics.
    */
   getStats(): UsageStats {
-    const instances = this.instanceManager.getAllInstances();
-    const toolUsesPerInstance = new Map<string, number>();
+    const workers = this.teamManager.getAllWorkers();
+    const toolUsesPerWorker = new Map<number, number>();
     let totalToolUses = 0;
 
-    for (const instance of instances) {
-      toolUsesPerInstance.set(instance.id, instance.toolUseCount);
-      totalToolUses += instance.toolUseCount;
+    for (const worker of workers) {
+      toolUsesPerWorker.set(worker.id, worker.toolUseCount);
+      totalToolUses += worker.toolUseCount;
     }
 
     const runDurationMinutes = (Date.now() - this.startTime.getTime()) / 60000;
 
     return {
       totalToolUses,
-      toolUsesPerInstance,
+      toolUsesPerWorker,
       startTime: this.startTime,
       runDurationMinutes,
     };
@@ -86,12 +92,12 @@ export class CostTracker {
       };
     }
 
-    // Check per-instance limits
-    for (const [instanceId, count] of stats.toolUsesPerInstance) {
+    // Check per-worker limits
+    for (const [workerId, count] of stats.toolUsesPerWorker) {
       if (count >= this.limits.maxToolUsesPerInstance) {
         return {
           exceeded: true,
-          reason: `Instance ${instanceId} tool uses (${count}) exceeded limit (${this.limits.maxToolUsesPerInstance})`,
+          reason: `Worker ${workerId} tool uses (${count}) exceeded limit (${this.limits.maxToolUsesPerInstance})`,
           stats,
         };
       }
@@ -124,14 +130,15 @@ export class CostTracker {
       this.warned.add('duration');
     }
 
-    // Warn about per-instance limits
-    for (const [instanceId, count] of stats.toolUsesPerInstance) {
+    // Warn about per-worker limits
+    for (const [workerId, count] of stats.toolUsesPerWorker) {
       const ratio = count / this.limits.maxToolUsesPerInstance;
-      if (ratio >= warningThreshold && !this.warned.has(instanceId)) {
+      const warnKey = `worker-${workerId}`;
+      if (ratio >= warningThreshold && !this.warned.has(warnKey)) {
         logger.warn(
-          `Instance ${instanceId} approaching tool use limit: ${count}/${this.limits.maxToolUsesPerInstance} (${(ratio * 100).toFixed(1)}%)`
+          `Worker ${workerId} approaching tool use limit: ${count}/${this.limits.maxToolUsesPerInstance} (${(ratio * 100).toFixed(1)}%)`
         );
-        this.warned.add(instanceId);
+        this.warned.add(warnKey);
       }
     }
 
@@ -147,7 +154,7 @@ export class CostTracker {
     logger.info('Usage stats', {
       totalToolUses: stats.totalToolUses,
       runDurationMinutes: stats.runDurationMinutes.toFixed(1),
-      perInstance: Object.fromEntries(stats.toolUsesPerInstance),
+      perWorker: Object.fromEntries(stats.toolUsesPerWorker),
       limits: this.limits,
     });
   }

@@ -1,20 +1,29 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { CostTracker } from '../../src/orchestrator/cost-tracker.js';
-import { createMockInstanceManager, createMockInstance } from '../helpers/mocks.js';
+import { TeamManager } from '../../src/v2/team-manager.js';
+
+/**
+ * Create a mock TeamManager for testing
+ */
+function createMockTeamManager(workerCount: number = 3): TeamManager {
+  const manager = new TeamManager({
+    workerCount,
+    engineerManagerGroupSize: 4,
+    baseBranch: 'main',
+  });
+  manager.initialize();
+  return manager;
+}
 
 describe('CostTracker', () => {
-  let mockInstanceManager: ReturnType<typeof createMockInstanceManager>;
+  let teamManager: TeamManager;
   let costTracker: CostTracker;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    mockInstanceManager = createMockInstanceManager([
-      createMockInstance('manager', 'manager'),
-      createMockInstance('worker-1', 'worker'),
-      createMockInstance('worker-2', 'worker'),
-    ]);
+    teamManager = createMockTeamManager(3);
 
-    costTracker = new CostTracker(mockInstanceManager as any, {
+    costTracker = new CostTracker(teamManager, {
       maxToolUsesPerInstance: 100,
       maxTotalToolUses: 250,
       maxRunDurationMinutes: 60,
@@ -27,16 +36,16 @@ describe('CostTracker', () => {
 
   describe('getStats', () => {
     it('should return current usage statistics', () => {
-      mockInstanceManager.setToolUseCount('manager', 10);
-      mockInstanceManager.setToolUseCount('worker-1', 20);
-      mockInstanceManager.setToolUseCount('worker-2', 30);
+      teamManager.incrementToolUseCount(1, 10);
+      teamManager.incrementToolUseCount(2, 20);
+      teamManager.incrementToolUseCount(3, 30);
 
       const stats = costTracker.getStats();
 
       expect(stats.totalToolUses).toBe(60);
-      expect(stats.toolUsesPerInstance.get('manager')).toBe(10);
-      expect(stats.toolUsesPerInstance.get('worker-1')).toBe(20);
-      expect(stats.toolUsesPerInstance.get('worker-2')).toBe(30);
+      expect(stats.toolUsesPerWorker.get(1)).toBe(10);
+      expect(stats.toolUsesPerWorker.get(2)).toBe(20);
+      expect(stats.toolUsesPerWorker.get(3)).toBe(30);
     });
 
     it('should track run duration', () => {
@@ -53,9 +62,9 @@ describe('CostTracker', () => {
 
   describe('checkLimits', () => {
     it('should not exceed when under all limits', () => {
-      mockInstanceManager.setToolUseCount('manager', 10);
-      mockInstanceManager.setToolUseCount('worker-1', 20);
-      mockInstanceManager.setToolUseCount('worker-2', 30);
+      teamManager.incrementToolUseCount(1, 10);
+      teamManager.incrementToolUseCount(2, 20);
+      teamManager.incrementToolUseCount(3, 30);
 
       const result = costTracker.checkLimits();
 
@@ -64,9 +73,9 @@ describe('CostTracker', () => {
     });
 
     it('should detect total tool use limit exceeded', () => {
-      mockInstanceManager.setToolUseCount('manager', 100);
-      mockInstanceManager.setToolUseCount('worker-1', 100);
-      mockInstanceManager.setToolUseCount('worker-2', 100);
+      teamManager.incrementToolUseCount(1, 100);
+      teamManager.incrementToolUseCount(2, 100);
+      teamManager.incrementToolUseCount(3, 100);
 
       const result = costTracker.checkLimits();
 
@@ -76,13 +85,13 @@ describe('CostTracker', () => {
       expect(result.reason).toContain('250');
     });
 
-    it('should detect per-instance limit exceeded', () => {
-      mockInstanceManager.setToolUseCount('worker-1', 150);
+    it('should detect per-worker limit exceeded', () => {
+      teamManager.incrementToolUseCount(2, 150);
 
       const result = costTracker.checkLimits();
 
       expect(result.exceeded).toBe(true);
-      expect(result.reason).toContain('worker-1');
+      expect(result.reason).toContain('Worker 2');
       expect(result.reason).toContain('150');
       expect(result.reason).toContain('100');
     });
@@ -100,9 +109,9 @@ describe('CostTracker', () => {
 
   describe('checkAndWarn', () => {
     it('should warn when approaching total limit', () => {
-      mockInstanceManager.setToolUseCount('manager', 80);
-      mockInstanceManager.setToolUseCount('worker-1', 80);
-      mockInstanceManager.setToolUseCount('worker-2', 50);
+      teamManager.incrementToolUseCount(1, 80);
+      teamManager.incrementToolUseCount(2, 80);
+      teamManager.incrementToolUseCount(3, 50);
 
       // 210/250 = 84% > 80% threshold
       const result = costTracker.checkAndWarn(0.8);
@@ -111,9 +120,9 @@ describe('CostTracker', () => {
     });
 
     it('should warn only once per threshold', () => {
-      mockInstanceManager.setToolUseCount('manager', 80);
-      mockInstanceManager.setToolUseCount('worker-1', 80);
-      mockInstanceManager.setToolUseCount('worker-2', 50);
+      teamManager.incrementToolUseCount(1, 80);
+      teamManager.incrementToolUseCount(2, 80);
+      teamManager.incrementToolUseCount(3, 50);
 
       costTracker.checkAndWarn(0.8);
       costTracker.checkAndWarn(0.8);
@@ -122,12 +131,12 @@ describe('CostTracker', () => {
       expect((costTracker as any).warned.has('total')).toBe(true);
     });
 
-    it('should warn when approaching per-instance limit', () => {
-      mockInstanceManager.setToolUseCount('worker-1', 85);
+    it('should warn when approaching per-worker limit', () => {
+      teamManager.incrementToolUseCount(2, 85);
 
       costTracker.checkAndWarn(0.8);
 
-      expect((costTracker as any).warned.has('worker-1')).toBe(true);
+      expect((costTracker as any).warned.has('worker-2')).toBe(true);
     });
 
     it('should warn when approaching duration limit', () => {
@@ -149,10 +158,10 @@ describe('CostTracker', () => {
     });
 
     it('should reset warnings when limits updated', () => {
-      mockInstanceManager.setToolUseCount('worker-1', 85);
+      teamManager.incrementToolUseCount(2, 85);
       costTracker.checkAndWarn(0.8);
 
-      expect((costTracker as any).warned.has('worker-1')).toBe(true);
+      expect((costTracker as any).warned.has('worker-2')).toBe(true);
 
       costTracker.updateLimits({ maxToolUsesPerInstance: 200 });
 
@@ -188,7 +197,7 @@ describe('CostTracker', () => {
 
   describe('default limits', () => {
     it('should use default limits when not specified', () => {
-      const tracker = new CostTracker(mockInstanceManager as any);
+      const tracker = new CostTracker(teamManager);
       const limits = tracker.getLimits();
 
       expect(limits.maxToolUsesPerInstance).toBe(500);

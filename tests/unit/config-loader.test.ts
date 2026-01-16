@@ -12,7 +12,6 @@ describe('ConfigLoader', () => {
     repositoryUrl: 'https://github.com/test/repo.git',
     branch: 'main',
     workerCount: 2,
-    serverPort: 3000,
   };
 
   beforeEach(async () => {
@@ -58,10 +57,8 @@ describe('ConfigLoader', () => {
 
       expect(config.branch).toBe('main');
       expect(config.authMode).toBe('oauth');
-      expect(config.serverPort).toBe(3000);
-      expect(config.hookServerPort).toBe(3000);
-      expect(config.healthCheckIntervalMs).toBe(30000);
-      expect(config.stuckThresholdMs).toBe(180000);
+      expect(config.taskTimeoutMs).toBe(600000);
+      expect(config.pollIntervalMs).toBe(5000);
       expect(config.maxToolUsesPerInstance).toBe(500);
       expect(config.maxTotalToolUses).toBe(2000);
       expect(config.maxRunDurationMinutes).toBe(120);
@@ -130,31 +127,13 @@ describe('ConfigLoader', () => {
       await expect(loader.loadOrchestratorConfig()).rejects.toThrow();
     });
 
-    it('should reject invalid port numbers', async () => {
+    it('should reject invalid timing values', async () => {
       await writeFile(
         join(testDir, 'orchestrator.json'),
-        JSON.stringify({ ...validConfig, serverPort: 80 })
+        JSON.stringify({ ...validConfig, taskTimeoutMs: 100 }) // Below minimum of 60000
       );
 
       await expect(loader.loadOrchestratorConfig()).rejects.toThrow();
-    });
-
-    it('should support legacy hookServerPort field', async () => {
-      const legacyConfig = {
-        repositoryUrl: validConfig.repositoryUrl,
-        branch: validConfig.branch,
-        workerCount: validConfig.workerCount,
-        hookServerPort: 3100,
-      };
-
-      await writeFile(
-        join(testDir, 'orchestrator.json'),
-        JSON.stringify(legacyConfig)
-      );
-
-      const config = await loader.loadOrchestratorConfig();
-      expect(config.serverPort).toBe(3100);
-      expect(config.hookServerPort).toBe(3100);
     });
 
     it('should resolve relative logDirectory against config dir', async () => {

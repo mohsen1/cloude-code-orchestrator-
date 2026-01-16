@@ -17,7 +17,7 @@ Spawns parallel Claude Code instances using a hierarchical coordination model:
 
 ## Installation
 
-Requirements: Node.js 22+, tmux, git, [Claude Code CLI](https://github.com/anthropics/claude-code)
+Requirements: Node.js 22+, git, [Claude Code CLI](https://github.com/anthropics/claude-code)
 
 ```bash
 npm install -g @mohsen/claude-code-orchestrator
@@ -62,14 +62,12 @@ For rate limit rotation cco offers two authentication modes: OAuth and API keys.
 
 ```json
 [
-  { "name": "key-1", "env": { "ANTHROPIC_API_KEY": "sk-ant-..." } }
+  { "name": "key-1", "apiKey": "sk-ant-..." },
+  { "name": "key-2", "apiKey": "sk-ant-..." }
 ]
 ```
 
-
 Note: You can include multiple keys for rotation, and cco will switch keys upon hitting rate limits.
-
-You can also use other providers such as [Z.ai](https://z.ai) by specifying their required environment variables in the `env` object.
 
 ## Authentication Modes
 
@@ -91,9 +89,7 @@ Add these files to your target repository:
 
 Each run creates a timestamped folder with:
 
-- `combined.log` - Orchestrator events
-- `session-director.log` - Director tmux output
-- `session-worker-N.log` - Worker tmux outputs
+- `combined.log` - Orchestrator events and worker outputs
 
 ## Pausing and Resuming
 Pause the orchestrator (stops all instances):
@@ -109,7 +105,7 @@ cco resume --config ./my-config
 
 ## Cleanup
 
-Kill orphaned sessions and remove temporary worktrees:
+Remove temporary worktrees and workspace files:
 
 ```bash
 cco cleanup --config ./my-config

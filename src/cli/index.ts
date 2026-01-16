@@ -2,7 +2,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { startCommand } from './commands/start.js';
-import { viewCommand } from './commands/view.js';
 import { pauseCommand } from './commands/pause.js';
 import { resumeCommand } from './commands/resume.js';
 import { cleanupCommand } from './commands/cleanup.js';
@@ -11,8 +10,8 @@ const program = new Command();
 
 program
   .name('cco')
-  .description(chalk.cyan('Claude Code Orchestrator') + ' - Orchestrate multiple Claude instances')
-  .version('1.0.0');
+  .description(chalk.cyan('Claude Code Orchestrator (V2)') + ' - Orchestrate multiple Claude instances using --print mode')
+  .version('2.0.0');
 
 // Default command: interactive start or start with config
 program
@@ -21,13 +20,6 @@ program
   .option('-c, --config <path>', 'Path to config directory')
   .option('-w, --workspace <path>', 'Path to workspace directory')
   .action(startCommand);
-
-// View command: tmux cockpit
-program
-  .command('view')
-  .description('View all active orchestrator sessions in a tmux cockpit')
-  .option('-c, --config <path>', 'Path to config directory (to identify sessions)')
-  .action(viewCommand);
 
 // Pause command
 program
@@ -47,7 +39,7 @@ program
 // Cleanup command
 program
   .command('cleanup')
-  .description('Kill orphaned tmux sessions and remove temporary worktrees')
+  .description('Clean up orphaned worktrees from previous runs')
   .option('-c, --config <path>', 'Path to config directory')
   .action(cleanupCommand);
 

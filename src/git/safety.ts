@@ -3,6 +3,7 @@ import { readdir, rm, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../utils/logger.js';
+import { getGitQueue } from './operation-queue.js';
 
 const DEFAULT_TIMEOUT_MS = 15000;
 const STALE_LOCK_MS = 2 * 60 * 1000;
@@ -13,6 +14,10 @@ export interface GitRunOptions {
   timeoutMs?: number;
   env?: Record<string, string>;
   retryOnLock?: boolean;
+  /** Skip the queue and run immediately (use sparingly) */
+  skipQueue?: boolean;
+  /** Priority for queued operations */
+  priority?: 'high' | 'normal' | 'low';
 }
 
 type GitRunResult = Awaited<ReturnType<typeof execa>>;
@@ -106,7 +111,11 @@ export async function clearStaleGitLocks(workDir: string, staleMs: number = STAL
   return removed;
 }
 
-export async function runGit(
+/**
+ * Internal implementation that actually runs the git command.
+ * This is called either directly (skipQueue) or via the queue.
+ */
+async function runGitImmediate(
   workDir: string,
   args: string[],
   options: GitRunOptions = {}
@@ -138,4 +147,36 @@ export async function runGit(
     }
     throw err;
   }
+}
+
+/**
+ * Run a git command, serialized through the operation queue to prevent lock contention.
+ * 
+ * With 14+ workers using worktrees, concurrent git operations can fail due to
+ * .git/index.lock conflicts. This function queues operations to run serially.
+ * 
+ * Use `skipQueue: true` only for read-only commands that don't touch the index.
+ */
+export async function runGit(
+  workDir: string,
+  args: string[],
+  options: GitRunOptions = {}
+): Promise<GitRunResult> {
+  // Some commands are safe to run concurrently (read-only)
+  const safeCommands = ['rev-parse', 'branch', '--show-current', 'log', 'diff', 'show', 'ls-tree', 'cat-file'];
+  const isSafeCommand = safeCommands.some(cmd => args.includes(cmd)) && !args.includes('checkout');
+  
+  if (options.skipQueue || isSafeCommand) {
+    return runGitImmediate(workDir, args, options);
+  }
+
+  const queue = getGitQueue();
+  return queue.enqueue(
+    workDir,
+    () => runGitImmediate(workDir, args, options),
+    {
+      priority: options.priority ?? 'normal',
+      label: args.slice(0, 3).join(' '),
+    }
+  );
 }

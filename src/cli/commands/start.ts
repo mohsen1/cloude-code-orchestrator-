@@ -4,7 +4,8 @@ import { join, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
-import { Orchestrator, AuthConfig } from '../../orchestrator/manager.js';
+import { V2Orchestrator } from '../../v2/index.js';
+import type { AuthConfig, V2OrchestratorConfig } from '../../v2/types.js';
 import { ConfigLoader } from '../../config/loader.js';
 import { logger, configureLogDirectory } from '../../utils/logger.js';
 import { extractRepoName } from '../../utils/repo.js';
@@ -18,7 +19,7 @@ interface StartOptions {
  * Interactive prompts for configuration
  */
 async function runInteractiveSetup(): Promise<{ configDir: string; workspaceDir: string }> {
-  console.log(chalk.cyan('\n🚀 Claude Code Orchestrator - Interactive Setup\n'));
+  console.log(chalk.cyan('\n🚀 Claude Code Orchestrator (V2) - Interactive Setup\n'));
 
   const answers = await inquirer.prompt([
     {
@@ -94,7 +95,7 @@ async function runInteractiveSetup(): Promise<{ configDir: string; workspaceDir:
       },
     ]);
 
-    const apiKeys = [{ name: 'api-key-1', env: { ANTHROPIC_API_KEY: keyAnswer.apiKey } }];
+    const apiKeys = [{ name: 'api-key-1', apiKey: keyAnswer.apiKey }];
     await writeFile(join(configDir, 'api-keys.json'), JSON.stringify(apiKeys, null, 2));
     console.log(chalk.green('✓ API key saved'));
   }
@@ -122,11 +123,17 @@ async function loadAuthConfigs(configDir: string): Promise<AuthConfig[]> {
     if (Array.isArray(data)) {
       for (const item of data) {
         if (typeof item === 'string') {
-          configs.push({ name: `api-key-${configs.length + 1}`, env: { ANTHROPIC_API_KEY: item } });
-        } else if (item.env && typeof item.env === 'object') {
-          configs.push({ name: item.name || `config-${configs.length + 1}`, env: item.env });
+          // Plain API key string
+          configs.push({ name: `api-key-${configs.length + 1}`, apiKey: item });
+        } else if (item.apiKey) {
+          // V2 format: { name, apiKey }
+          configs.push({ name: item.name || `api-key-${configs.length + 1}`, apiKey: item.apiKey });
         } else if (item.key) {
-          configs.push({ name: item.name || `api-key-${configs.length + 1}`, env: { ANTHROPIC_API_KEY: item.key } });
+          // Legacy format: { name, key }
+          configs.push({ name: item.name || `api-key-${configs.length + 1}`, apiKey: item.key });
+        } else if (item.env?.ANTHROPIC_API_KEY) {
+          // Legacy env format
+          configs.push({ name: item.name || `api-key-${configs.length + 1}`, apiKey: item.env.ANTHROPIC_API_KEY });
         }
       }
     }
@@ -170,7 +177,7 @@ async function createRunLogDirectory(baseDir: string): Promise<string> {
 /**
  * Set up signal handlers for graceful shutdown
  */
-function setupSignalHandlers(orchestrator: Orchestrator): void {
+function setupSignalHandlers(orchestrator: V2Orchestrator): void {
   let isShuttingDown = false;
 
   const shutdown = async (signal: string): Promise<void> => {
@@ -247,7 +254,7 @@ export async function startCommand(options: StartOptions): Promise<void> {
       }
     }
 
-    logger.info('Claude Code Orchestrator starting...', {
+    logger.info('Claude Code Orchestrator (V2) starting...', {
       configDir,
       workspaceDir,
       runLogDir,
@@ -259,7 +266,8 @@ export async function startCommand(options: StartOptions): Promise<void> {
       workerCount: config.workerCount,
       engineerManagerGroupSize: config.engineerManagerGroupSize,
       authMode: config.authMode,
-      logDirectory: config.logDirectory,
+      taskTimeoutMs: config.taskTimeoutMs,
+      pollIntervalMs: config.pollIntervalMs,
     });
   } catch (err) {
     logger.error('Configuration error', err);
@@ -279,29 +287,61 @@ export async function startCommand(options: StartOptions): Promise<void> {
   }
 
   if (authConfigs.length > 0) {
-    logger.info(`Loaded ${authConfigs.length} auth config(s) for rotation: ${authConfigs.map(c => c.name).join(', ')}`);
+    logger.info(`Loaded ${authConfigs.length} auth config(s) for rotation: ${authConfigs.map((c) => c.name).join(', ')}`);
   } else {
     logger.info('No auth configs loaded - using OAuth authentication');
   }
 
+  // Build V2 config
+  const v2Config: V2OrchestratorConfig = {
+    repositoryUrl: config.repositoryUrl,
+    branch: config.branch,
+    workerCount: config.workerCount,
+    workspaceDir: workspaceDir!,
+    logDirectory: config.logDirectory,
+    model: config.model,
+    authMode: config.authMode,
+    engineerManagerGroupSize: config.engineerManagerGroupSize,
+    taskTimeoutMs: config.taskTimeoutMs,
+    pollIntervalMs: config.pollIntervalMs,
+    maxToolUsesPerInstance: config.maxToolUsesPerInstance,
+    maxTotalToolUses: config.maxTotalToolUses,
+    maxRunDurationMinutes: config.maxRunDurationMinutes,
+    envFiles: config.envFiles,
+    cloneDepth: config.cloneDepth,
+    useRunBranch: config.useRunBranch,
+  };
+
+  // Create pause signal path
+  const pauseSignalPath = join(configDir, 'pause.signal');
+
   // Create and start orchestrator
-  const orchestrator = new Orchestrator(config, workspaceDir, authConfigs, runLogDir, configDir);
+  const orchestrator = new V2Orchestrator(v2Config, authConfigs, pauseSignalPath);
   setupSignalHandlers(orchestrator);
 
   try {
-    await orchestrator.start(false);
+    // For now, start without tasks - tasks will be loaded from the project
+    // In a real implementation, you'd load tasks from a task file or API
+    await orchestrator.start();
 
     // Log status periodically
-    const statusIntervalMs = Math.round((config.timingBaseMs ?? config.healthCheckIntervalMs) * 2);
+    const statusIntervalMs = config.pollIntervalMs * 6; // Every 30 seconds by default
     const statusInterval = setInterval(() => {
       const status = orchestrator.getStatus();
       logger.info('Orchestrator status', {
-        instances: status.instances,
-        costs: status.costs,
-        directorQueueSize: status.directorQueueSize,
-        teams: status.teams,
-        hierarchyEnabled: status.hierarchyEnabled,
-        authConfigsAvailable: status.authConfigsAvailable,
+        mode: status.mode,
+        isRunning: status.isRunning,
+        isPaused: status.isPaused,
+        totalTasks: status.totalTasks,
+        completedTasks: status.completedTasks,
+        failedTasks: status.failedTasks,
+        pendingTasks: status.pendingTasks,
+        runDurationMinutes: status.runDurationMinutes.toFixed(1),
+        workers: status.workers.map((w) => ({
+          id: w.id,
+          status: w.status,
+          task: w.currentTaskTitle || 'idle',
+        })),
       });
     }, statusIntervalMs);
 
