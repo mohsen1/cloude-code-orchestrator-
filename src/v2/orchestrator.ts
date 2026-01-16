@@ -5,7 +5,7 @@
  * No tmux, no hooks, no terminal scraping - just process execution.
  */
 
-import { mkdir, readdir, rm } from 'fs/promises';
+import { mkdir, readdir, rm, readFile } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { execa } from 'execa';
@@ -118,7 +118,10 @@ export class V2Orchestrator {
       // 5. Create worker executors
       this.createWorkerExecutors();
 
-      // 6. Start processing loop
+      // 6. Initialize tasks from PROJECT_DIRECTION.md
+      await this.initializeTasks();
+
+      // 7. Start processing loop
       await this.processLoop();
     } catch (error) {
       logger.error('Orchestrator failed to start', { error });
@@ -229,6 +232,101 @@ export class V2Orchestrator {
     }
 
     logger.info('Worker executors created', { count: this.workerExecutors.size });
+  }
+
+  /**
+   * Initialize tasks from PROJECT_DIRECTION.md
+   */
+  private async initializeTasks(): Promise<void> {
+    const repoName = extractRepoName(this.config.repositoryUrl);
+    const repoPath = join(this.config.workspaceDir, repoName);
+    const projectDirectionPath = join(repoPath, 'PROJECT_DIRECTION.md');
+
+    let projectDirection = '';
+
+    // Try to read PROJECT_DIRECTION.md
+    if (existsSync(projectDirectionPath)) {
+      const { readFile } = await import('fs/promises');
+      projectDirection = await readFile(projectDirectionPath, 'utf-8');
+      logger.info('Loaded PROJECT_DIRECTION.md', { length: projectDirection.length });
+    } else {
+      logger.warn('PROJECT_DIRECTION.md not found, creating default task');
+      projectDirection = 'No PROJECT_DIRECTION.md found. Please create one with project goals.';
+    }
+
+    const mode = this.teamManager.getMode();
+
+    if (mode === 'flat') {
+      // In flat mode, create one task per worker to work on the project
+      // First worker gets the main task to read PROJECT_DIRECTION and create subtasks
+      this.taskQueue.addTask({
+        title: 'Initialize project from PROJECT_DIRECTION.md',
+        description: `Read PROJECT_DIRECTION.md and begin implementing the project requirements.
+
+PROJECT_DIRECTION.md contents:
+${projectDirection}
+
+Instructions:
+1. Analyze the project requirements in PROJECT_DIRECTION.md
+2. Create a WORKER_TASK_LIST.md file documenting your planned approach
+3. Begin implementing the requirements
+4. Make incremental commits as you complete features
+5. Ensure code compiles and tests pass before finishing`,
+        priority: 'high',
+      });
+
+      // Add additional tasks for other workers to help
+      const workers = this.teamManager.getAllWorkers();
+      for (let i = 1; i < workers.length; i++) {
+        this.taskQueue.addTask({
+          title: `Assist with project implementation (Worker ${i + 1})`,
+          description: `Check WORKER_TASK_LIST.md and TEAM_STRUCTURE.md for assigned tasks.
+If no specific task is assigned, review the PROJECT_DIRECTION.md and help implement remaining features.
+
+Instructions:
+1. Check for any unassigned tasks in WORKER_TASK_LIST.md or TEAM_STRUCTURE.md
+2. If found, work on the highest priority unassigned task
+3. If no tasks found, review PROJECT_DIRECTION.md and implement remaining features
+4. Coordinate with other workers to avoid duplicate work
+5. Make incremental commits with clear messages`,
+          priority: 'normal',
+        });
+      }
+    } else {
+      // In hierarchy mode, create a task for the director to distribute work
+      this.taskQueue.addTask({
+        title: 'Director: Plan and distribute work',
+        description: `You are the Director. Read PROJECT_DIRECTION.md and create a work distribution plan.
+
+PROJECT_DIRECTION.md contents:
+${projectDirection}
+
+Instructions:
+1. Analyze the project requirements
+2. Create TEAM_STRUCTURE.md with task assignments for each team
+3. Break down the project into tasks suitable for ${this.config.workerCount} workers
+4. Assign tasks to Engineering Managers who will distribute to their teams
+5. Monitor progress and handle any escalations`,
+        priority: 'high',
+      });
+
+      // Create initial tasks for EMs to check for work
+      const teams = this.teamManager.getAllTeams();
+      for (const team of teams) {
+        this.taskQueue.addTask({
+          title: `EM Team ${team.id}: Check for assigned tasks`,
+          description: `You are the Engineering Manager for Team ${team.id}.
+Check TEAM_STRUCTURE.md for your team's assigned tasks.
+Distribute work to your workers and ensure quality delivery.`,
+          priority: 'normal',
+        });
+      }
+    }
+
+    logger.info('Tasks initialized', {
+      mode,
+      taskCount: this.taskQueue.getStats().total,
+    });
   }
 
   /**
